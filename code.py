@@ -1,14 +1,6 @@
 """
 TinyML Content Moderator - code structure outline / skeleton.
 
-This mirrors the pattern already used in deeplearningweek2.py (device setup,
-dataset -> DataLoader -> model -> train loop -> eval), extended to cover the
-multi-stage pipeline: domain-adaptive pretraining -> supervised fine-tuning ->
-distillation -> cross-platform transfer.
-
-Nothing here is meant to run as-is - it's scaffolding to fill in as you go.
-Suggested file layout (split into separate .py files once it grows):
-
     data/
         load_discord.py       # unlabeled corpus for MLM pretraining
         load_toxicity.py      # labeled dataset for classification fine-tuning
