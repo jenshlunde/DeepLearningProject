@@ -35,6 +35,14 @@ def get_device():
 # ---------------------------------------------------------------------------
 # 1. Data loading & preprocessing
 # ---------------------------------------------------------------------------
+
+from datasets import load_dataset
+
+# Login using e.g. `huggingface-cli login` to access this dataset
+ds = load_dataset("lparkourer10/twitch_chat")
+
+#ds = load_dataset("SaisExperiments/Discord-Unveiled-Compressed") 118 GB
+
 # 1a. Discord corpus (unlabeled) — for MLM domain-adaptive pretraining
 #     - load raw JSON/parquet dump
 #     - strip non-text content (attachments, embeds, system messages)
