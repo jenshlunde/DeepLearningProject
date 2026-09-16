@@ -16,3 +16,11 @@ Project angles:
 Transfer learning for other platforms - Discord, chatrooms, ..
 TinyML for NLP - 
 Problem about different languages
+
+
+
+Performance metrics: Accuracy, latency, memory cost, computational cost, ...?
+- Related metrics: #params, 
+Metrics that should stay fixed over testing(?): Tokenizer, platform it runs on, optimizer,
+Things to change: data_size (32float vs 16int vs 8int), wide v. narrow models, bottlenecked (?)
+Things to look out for: 'camouflaged' text - shit / sh1t - fuck / f_u_c_k
