@@ -70,6 +70,11 @@ HF_HUB_DISABLE_SYMLINKS_WARNING=1       #Hides warning about model using symlink
 ## Teacher model(s)
 TEACHER_BASE = "answerdotai/ModernBERT-base"
 BEST_TEACHER_PATH = "C:/Users/jensh/Desktop/Kaggle_disord_data_v3/Models"
+BEST_TEACHER_DA_NAME = "best_teacher_da_model_state_dict.pth"
+BEST_TEACHER_TL_NAME = "best_teacher_tl_model_state_dict.pth"
+BEST_STUDENT_PATH = "C:/Users/jensh/Desktop/Kaggle_disord_data_v3/Models"
+
+
 
 teacher_mlm = AutoModelForMaskedLM.from_pretrained(TEACHER_BASE)
 print(f"Teacher model initialized: {TEACHER_BASE}")
@@ -149,6 +154,9 @@ print("jigsaw_val data set initialized, length:", len(jigsaw_val))
 print("jigsaw_test data set initialized, length:", len(jigsaw_test))
 
 jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer,max_length=512)
+jigsaw_distill_collator = jsonDataset.DualSupervisedCollator(
+    teacher_tokenizer, student_tokenizer, max_length=512
+)
 jigsaw_train_loader = torch.utils.data.DataLoader(
     jigsaw_train,
     batch_size=jigsaw_batch_size,
@@ -170,16 +178,28 @@ jigsaw_test_loader = torch.utils.data.DataLoader(
     num_workers=jigsaw_workers,
     collate_fn=jigsaw_collator,
 )
+jigsaw_distill_train_loader = torch.utils.data.DataLoader(
+    jigsaw_train, batch_size=jigsaw_batch_size, shuffle=True,
+    num_workers=jigsaw_workers, collate_fn=jigsaw_distill_collator,
+)
+jigsaw_distill_val_loader = torch.utils.data.DataLoader(
+    jigsaw_val, batch_size=jigsaw_batch_size, shuffle=False,
+    num_workers=jigsaw_workers, collate_fn=jigsaw_distill_collator,
+)
 print("jigsaw data loaders initialized.")
 
 
-## loss-functions and optimizers
+## loss-functions,  optimizers and hyperparameters
 loss_fn_teacher_mlm = None                          # model comes with its own loss function (?)
 loss_fn_teacher = torch.nn.BCEWithLogitsLoss()      #?
 loss_fn_student = torch.nn.BCEWithLogitsLoss()      #?
 
 optimizer_teacher_mlm = torch.optim.AdamW(teacher_mlm.parameters(),lr=5e-5,)
 optimizer_student = torch.optim.AdamW(student_model_1.parameters(),lr=5e-5,)
+
+student_alpha = 0.5         #??
+student_temperature = 2.0   #??
+
 
 print("Setup done")
 
@@ -267,8 +287,8 @@ for epoch in range(epochs_da):
                 print(f"Domain Adaption - Train loss: {domain_adaption_results:.4f}")
                 print(f"Domain Adaption - Val loss: {teacher_domain_val:.4f}")
 
-torch.save(best_teacher_da_model_state_dict, f"{BEST_TEACHER_PATH}/best_teacher_da_model_state_dict.pth")  # Save best model
-print(f"Best DA teacher model saved at epoch {best_epoch_da} with val loss: {best_loss_da:.4f}, saved at path: {BEST_TEACHER_PATH}/best_teacher_da_model_state_dict.pth")
+torch.save(best_teacher_da_model_state_dict, f"{BEST_TEACHER_PATH}/{BEST_TEACHER_DA_NAME}")  # Save best model
+print(f"Best DA teacher model saved at epoch {best_epoch_da} with val loss: {best_loss_da:.4f}, saved at path: {BEST_TEACHER_PATH}/{BEST_TEACHER_DA_NAME}")
 
 
 print("Domain adaption done.")
@@ -370,8 +390,10 @@ for epoch in range(epochs_tl):
         print(f"Best DA epoch: {best_epoch_da}, validation loss: {best_loss_da:.4f}")
 
 
-torch.save(best_teacher_tl_model_state_dict, f"{BEST_TEACHER_PATH}/best_teacher_tl_model_state_dict.pth")  # Saving best model
-print(f"Best TL teacher model saved at epoch {best_epoch_tl} with val loss: {best_loss_tl:.4f}, saved at path: {BEST_TEACHER_PATH}/best_teacher_tl_model_state_dict.pth")
+torch.save(best_teacher_tl_model_state_dict, f"{BEST_TEACHER_PATH}/{BEST_TEACHER_TL_NAME}")  # Saving best model
+print(f"Best TL teacher model saved at epoch {best_epoch_tl} with val loss: {best_loss_tl:.4f}, saved at path: {BEST_TEACHER_PATH}/{BEST_TEACHER_TL_NAME}")
+
+
 
 print("\n\n")
 print("##########################################")
@@ -379,7 +401,78 @@ print("### PHASE 3 : DISTILLING ONTO STUDENTS ###")
 print("##########################################")
 print("\n\n")
 
+#Load best teacher model
+teacher_model.load_state_dict(torch.load(f"{BEST_TEACHER_PATH}/{BEST_TEACHER_TL_NAME}", weights_only=True))  #only weights???
 
+print("Starting distilling of teacher model to student model...")
+epochs_dis = 5
+update_pr_dis = 10
+patience_dis = 5
+best_loss_dis = float('inf')
+best_epoch_dis = 0
+prints_dis = 10
+
+student_distil_losses = []
+student_distil_accuracies_total = []
+student_distil_accuracies_individual = []
+patience_counter_dis = 0
+best_student_model_1_state_dict = copy.deepcopy(student_model_1.state_dict())
+
+for epoch in range(epochs_dis):
+    # Distil the teacher onto the student for current epoch
+    train_model_distill_results =  modelFunctions.train_model_distill(
+        student_model = student_model_1, 
+        teacher_model = teacher_model, 
+        optimizer = optimizer_student, 
+        dataloader = jigsaw_distill_train_loader, 
+        device = device, 
+        alpha = student_alpha, 
+        temperature = student_temperature, 
+        eval_func = modelFunctions.eval_sigmoid_05, 
+        prints=prints_dis)
+    student_train_loss, student_train_accuracy_total, student_train_accuracy_individual = train_model_distill_results
+
+    student_distil_losses.append(student_train_loss)
+    student_distil_accuracies_total.append(student_train_accuracy_total)
+    student_distil_accuracies_individual.append(student_train_accuracy_individual)
+
+    val_model_distill_results = modelFunctions.validate_model_distillation(
+        student_model=student_model_1,
+        teacher_model=teacher_model,
+        dataloader=jigsaw_distill_val_loader,
+        device=device,
+        alpha=student_alpha,
+        temperature=student_temperature,
+        eval_func=modelFunctions.eval_sigmoid_05,
+        prints=prints_dis,
+    )
+    student_val_loss, student_val_accuracy_total, student_val_accuracy_individual = val_model_distill_results
+
+    if student_val_loss < best_loss_dis:
+        best_loss_dis = student_val_loss
+        best_epoch_dis = epoch
+        best_student_model_1_state_dict = copy.deepcopy(student_model_1.state_dict())
+        patience_counter_dis = 0
+    else:
+        patience_counter_dis += 1
+        if prints_dis >= 2:
+            print(f"Student Distilling - No improvement in val for {patience_counter_dis}/{patience_dis} epochs.")
+
+    if patience_counter_dis >= patience_dis:
+        if prints_dis >= 1:
+            print(f"Student Distilling - Early stopping at epoch {epoch}")
+        break
+
+    # Print results for current epoch if wanted
+    if prints_dis >= 1:
+        if epoch % update_pr_dis == 0:
+            print(f"Student Distilling - Epoch {epoch}/{epochs_dis}")
+            if prints_dis >= 3:
+                print(f"Student Distilling - Train loss: {student_train_loss:.4f}, Train accuracy (total): {student_train_accuracy_total:.4f}, Train accuracy (individual): {student_train_accuracy_individual:.4f}")
+                print(f"Student Distilling - Val loss: {student_val_loss:.4f}, Val accuracy (total): {student_val_accuracy_total:.4f}, Val accuracy (individual): {student_val_accuracy_individual:.4f}")
+
+torch.save(best_student_model_1_state_dict, f"{BEST_STUDENT_PATH}/best_student_model_1_state_dict.pth")
+print(f"Best student model saved at epoch {best_epoch_dis} with val loss: {best_loss_dis:.4f}")
 
 
 print("\n\n")
@@ -399,13 +492,8 @@ print("\n\n")
 
 # Save results from training, validation and testing for all models in a structured way (e.g., CSV, JSON, or a database) for later analysis and comparison.
 # 
-# DO PHASE 3: TEACHER MODEL DISTILLATION
-# - FREEZE THE TEACHER BEFORE DISTILLATION
-# - STUDENT MODEL REGISTRY
-# - STUDENT TOKENIZER AND DATALOADER FOR EVERY ARCHITECTURE
-# - CORRECT LOSS : total_loss = alpha * hard_label_loss + (1 - alpha) * soft_teacher_loss
-# - FIND STUDENT OPTIMERS pr STUDENT ARCHITECTURE
-# DO PHASE 3.5: STUDENT MODEL FINE-TUNING
+# DO MORE STUDENT MODELS, DIFFERENT ARCHITECTURES, HYPERPARAMETERS, ETC.
+# DO PHASE 3.5: STUDENT MODEL FINE-TUNING ??
 # DO PHASE 4: TESTING MODELS
 # - TEST THE FINAL TEACHER ON JIGSAW TEST SET
 # - TEST EVERY STUDENT ON THE JIGSAW TEST SET

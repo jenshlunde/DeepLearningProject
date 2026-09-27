@@ -58,6 +58,25 @@ class SupervisedCollator:
         return tokenized, torch.stack(labels)
 
 
+class DualSupervisedCollator:
+    def __init__(self, teacher_tokenizer, student_tokenizer, max_length=512):
+        self.teacher_tokenizer = teacher_tokenizer
+        self.student_tokenizer = student_tokenizer
+        self.max_length = max_length
+
+    def __call__(self, batch):
+        texts, labels = zip(*batch)
+        teacher_inputs = self.teacher_tokenizer(
+            list(texts), padding=True, truncation=True,
+            max_length=self.max_length, return_tensors="pt",
+        )
+        student_inputs = self.student_tokenizer(
+            list(texts), padding=True, truncation=True,
+            max_length=self.max_length, return_tensors="pt",
+        )
+        return teacher_inputs, student_inputs, torch.stack(labels)
+
+
 
 
 class jigsawDataset(Dataset):
