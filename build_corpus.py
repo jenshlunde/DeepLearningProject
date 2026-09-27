@@ -77,9 +77,8 @@ def read_channel_conversations(paths):
 
 #Build text corpus: Original data minus antispam
 def build_spam_removed_corpus(original_convs, detoxed_convs, detox_antispam_convs):
-    # How many times each exact message text appears in Detoxed vs.
-    # Detoxed+Antispam. The positive difference = occurrences removed by
-    # the antispam step specifically.
+    # How many times each exact message text appears in Detoxed vs. Detoxed+Antispam. 
+    # The positive difference = occurrences removed by the antispam step specifically.
     detoxed_counts = Counter(msg for conv in detoxed_convs for msg in conv)
     detox_antispam_counts = Counter(msg for conv in detox_antispam_convs for msg in conv)
 
@@ -126,8 +125,7 @@ def main():
     channel_ids = sorted(set(original_map) & set(detoxed_map) & set(detox_antispam_map))
     missing = (set(original_map) | set(detoxed_map) | set(detox_antispam_map)) - set(channel_ids)
     if missing:
-        print(f"Warning: {len(missing)} channel ID(s) not present in all three folders, skipping: "
-              f"{sorted(missing)[:10]}{' ...' if len(missing) > 10 else ''}")
+        print(f"Warning: {len(missing)} channel ID(s) not present in all three folders, skipping: "f"{sorted(missing)[:10]}{' ...' if len(missing) > 10 else ''}")
 
     if args.limit_channels:
         channel_ids = channel_ids[: args.limit_channels]
