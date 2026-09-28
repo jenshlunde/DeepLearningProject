@@ -123,7 +123,8 @@ class jef1056dataset(Dataset):
                 line = file.readline()      #Get the current text
                 if not line:                #If end of file, break
                     break
-                record = json.loads(line.decode("utf-8"))                                   #Load binary data to json
+                #NOT NEEDED AS CURRENTLY SETUP AND SLOW 
+                #record = json.loads(line.decode("utf-8"))                                   #Load binary data to json
                 self.offsets.append(offset)                                                 #save the offset for this line
         self._file = None
     def __len__(self):

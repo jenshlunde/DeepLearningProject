@@ -293,6 +293,8 @@ print(f"Best DA teacher model saved at epoch {best_epoch_da} with val loss: {bes
 
 print("Domain adaption done.")
    
+teacher_mlm.load_state_dict(best_teacher_da_model_state_dict)
+##?? What is the difference between saving the model and saving the state_dict??? 
 teacher_mlm.save_pretrained("models/teacher_domain_adapted")
 teacher_tokenizer.save_pretrained("models/teacher_domain_adapted")
 print("Domain adapted Teacher model saved.")
@@ -321,6 +323,7 @@ patience_tl = 5
 best_loss_tl = float('inf')
 best_epoch_tl = 0
 prints_tl = 10
+best_teacher_tl_model_state_dict = copy.deepcopy(teacher_model.state_dict())
 
 teacher_transfer_train_losses = []
 teacher_transfer_train_accuracies_total = []
@@ -386,8 +389,8 @@ for epoch in range(epochs_tl):
             print(f"Transfer Learning - Early stopping at epoch {epoch}")
         break
 
-    if prints_da >= 1 and epoch % update_pr_da == 0:
-        print(f"Best DA epoch: {best_epoch_da}, validation loss: {best_loss_da:.4f}")
+    if prints_tl >= 1 and epoch % update_pr_tl == 0:
+        print(f"Best TL epoch: {best_epoch_tl}, validation loss: {best_loss_tl:.4f}")
 
 
 torch.save(best_teacher_tl_model_state_dict, f"{BEST_TEACHER_PATH}/{BEST_TEACHER_TL_NAME}")  # Saving best model
@@ -529,8 +532,8 @@ print("\n\n")
 #Memory usage comparison
 #Model size comparison
 
-
-
+# Free VRAM between phases. teacher_mlm, its Adam state (~1.2 GB) and optimizer_teacher stay on the GPU through later phases. del them and call torch.cuda.empty_cache().
+#Refactor for the sweep. Wrap the phases in functions taking a config dict and writing a results JSON per run, and add a global seed. That matters more than any single fix above once you have many students.
 
 #if __name__ == "__main__":
 #    main()
