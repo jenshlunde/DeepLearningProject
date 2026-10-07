@@ -13,35 +13,18 @@ def train_model_unsupervised(model, optimizer, dataloader, device, loss_fn=None,
     total_loss = 0.0
     num_samples = 0
 
-    for batch, batch_data in enumerate(dataloader):
-        labels = None
+    for batch, (inputs, labels) in enumerate(dataloader):
+        inputs = {key: value.to(device) for key, value in inputs.items()}
+        labels = labels.to(device)
 
-        if isinstance(batch_data, Mapping):
-            model_inputs = {key: value.to(device) for key, value in batch_data.items()}
-            labels = model_inputs.get("labels")
-        else:
-            model_inputs, labels = batch_data
-            model_inputs = {key: value.to(device) for key, value in model_inputs.items()}
-            labels = labels.to(device)
-
-        output = model(**model_inputs)
-
-        if loss_fn is None:
-            if not hasattr(output, "loss") or output.loss is None:
-                raise ValueError("loss_fn is required when the model does not return a loss.")
-                
-            loss = output.loss
-        else:
-            if labels is None:
-                raise ValueError("The dataloader must provide labels when loss_fn is used.")
-            logits = output.logits if hasattr(output, "logits") else output
-            loss = loss_fn(logits, labels)
-
+        output = model(**inputs)
+        logits = output.logits if hasattr(output, "logits") else output
+        loss = loss_fn(logits, labels)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        batch_size = next(value for value in model_inputs.values() if value.ndim > 0).size(0)
+        batch_size = labels.size(0)
         total_loss += loss.item() * batch_size
         num_samples += batch_size
 
@@ -64,30 +47,15 @@ def validate_model_unsupervised(model, dataloader, device, loss_fn=None, prints=
     num_samples = 0
 
     with torch.no_grad():
-        for batch, batch_data in enumerate(dataloader):
-            if isinstance(batch_data, Mapping):
-                model_inputs = {key: value.to(device) for key, value in batch_data.items()}
-                labels = model_inputs.get("labels")
-            else:
-                model_inputs, labels = batch_data
-                model_inputs = {key: value.to(device) for key, value in model_inputs.items()}
-                labels = labels.to(device)
+        for batch, (inputs, labels) in enumerate(dataloader):
+            inputs = {key: value.to(device) for key, value in inputs.items()}
+            labels = labels.to(device)
+                        
+            output = model(**inputs)
+            logits = output.logits if hasattr(output, "logits") else output
+            loss = loss_fn(logits, labels)
 
-            output = model(**model_inputs)
-
-            if loss_fn is None:
-                if not hasattr(output, "loss") or output.loss is None:
-                    raise ValueError(
-                        "loss_fn is required when the model does not return a loss."
-                    )
-                loss = output.loss
-            else:
-                if labels is None:
-                    raise ValueError("The dataloader must provide labels when loss_fn is used.")
-                logits = output.logits if hasattr(output, "logits") else output
-                loss = loss_fn(logits, labels)
-
-            batch_size = next(value for value in model_inputs.values() if value.ndim > 0).size(0)
+            batch_size = labels.size(0)
             total_loss += loss.item() * batch_size
             num_samples += batch_size
 
