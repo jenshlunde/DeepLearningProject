@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import json
 from transformers import DataCollatorForLanguageModeling
+import random
 
 
 def collate_messages(batch):
@@ -9,35 +10,38 @@ def collate_messages(batch):
 
 
 class MlmCollator:
-    def __init__(self, tokenizer, max_length=512, mlm_probability=0.15):
+    def __init__(self, tokenizer, max_length = 512, mlm_probability = 0.15, max_chunks = 1, 
+                 random_start = True, chars_per_token_cap = 6):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.max_chunks = max_chunks
+        self.random_start = random_start
+        self.char_cap = max_length * max_chunks * chars_per_token_cap
         self.data_collator = DataCollatorForLanguageModeling(
-            tokenizer=tokenizer,
-            mlm=True,
-            mlm_probability=mlm_probability,
+            tokenizer = tokenizer, mlm = True, mlm_probability = mlm_probability,
         )
-
+        
     def __call__(self, batch):
         chunks = []
 
         for messages in batch:
+            start = random.randrange(len(messages)) if self.random_start else 0     #to avoid seeing the same text every epoch
+            text = "\n".join(messages[start:])[:self.char_cap]                      #limits the number of characters to be tokenized
+                        
             tokenized = self.tokenizer(
-                "\n".join(messages),
+                text
                 truncation=True,
                 max_length=self.max_length,
-                return_overflowing_tokens=True,
+                return_overflowing_tokens=self.max_chunks > 1,
                 return_special_tokens_mask=True,
             )
 
-            for chunk_index in range(len(tokenized["input_ids"])):
-                chunks.append(
-                    {
-                        key: value[chunk_index]
-                        for key, value in tokenized.items()
-                        if key in {"input_ids", "attention_mask", "special_tokens_mask"}
-                    }
-                )
+            if self.max_chunks > 1:
+                n_chunks = min(len(tokenized["input_ids"]), self.max_chunks)
+                for i in range (n_chunks):
+                    chunks.append({k: tokenized[k][i] for k in ("input_ids", "attention_mask", "special_tokens_mask")})
+            else:
+                chunks.append({k: tokenized[k] for k in ("input_ids", "attention_mask", "special_tokens_mask")})
 
         return self.data_collator(chunks)
 
@@ -104,7 +108,6 @@ class jigsawDataset(Dataset):
     def __getitem__(self, idx):
         if self._file is None:
             self._file = open(self.text_path, "rb")
-
         self._file.seek(self.offsets[idx])
         record = json.loads(self._file.readline().decode("utf-8"))
         labels = torch.tensor(self.labels[idx], dtype=torch.float32)
@@ -123,8 +126,7 @@ class jef1056dataset(Dataset):
                 line = file.readline()      #Get the current text
                 if not line:                #If end of file, break
                     break
-                #NOT NEEDED AS CURRENTLY SETUP AND SLOW 
-                #record = json.loads(line.decode("utf-8"))                                   #Load binary data to json
+                #record = json.loads(line.decode("utf-8"))        #NOT NEEDED AS CURRENTLY SETUP AND SLOW  #Load binary data to json
                 self.offsets.append(offset)                                                 #save the offset for this line
         self._file = None
     def __len__(self):
