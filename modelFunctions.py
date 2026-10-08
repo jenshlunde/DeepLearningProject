@@ -2,6 +2,7 @@ from collections.abc import Mapping
 import torch
 import torch.nn as nn
 import torch.nn.functional as nnF
+import time
 
 def eval_sigmoid_05(logits):
     return torch.sigmoid(logits) > 0.5
@@ -13,13 +14,29 @@ def train_model_unsupervised(model, optimizer, dataloader, device, loss_fn=None,
     total_loss = 0.0
     num_samples = 0
 
-    for batch, (inputs, labels) in enumerate(dataloader):
-        inputs = {key: value.to(device) for key, value in inputs.items()}
-        labels = labels.to(device)
+    for batch, batch_data in enumerate(dataloader):
+        labels = None
 
-        output = model(**inputs)
-        logits = output.logits if hasattr(output, "logits") else output
-        loss = loss_fn(logits, labels)
+        if isinstance(batch_data, Mapping):
+            model_inputs = {key: value.to(device) for key, value in batch_data.items()}
+            labels = model_inputs.get("labels")
+        else:
+            model_inputs, labels = batch_data
+            model_inputs = {key: value.to(device) for key, value in model_inputs.items()}
+            labels = labels.to(device)
+
+        output = model(**model_inputs)
+
+        if loss_fn is None:
+            if not hasattr(output, "loss") or output.loss is None:
+                raise ValueError("loss_fn is required when the model does not return a loss.")
+            loss = output.loss
+        else:
+            if labels is None:
+                raise ValueError("The dataloader must provide labels when loss_fn is used.")
+            logits = output.logits if hasattr(output, "logits") else output
+            loss = loss_fn(logits, labels)
+        
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -47,15 +64,29 @@ def validate_model_unsupervised(model, dataloader, device, loss_fn=None, prints=
     num_samples = 0
 
     with torch.no_grad():
-        for batch, (inputs, labels) in enumerate(dataloader):
-            inputs = {key: value.to(device) for key, value in inputs.items()}
-            labels = labels.to(device)
+        for batch, batch_data in enumerate(dataloader):
+            if isinstance(batch_data, Mapping):
+                model_inputs = {key: value.to(device) for key, value in batch_data.items()}
+                labels = model_inputs.get("labels")
+            else:
+                model_inputs, labels = batch_data
+                model_inputs = {key: value.to(device) for key, value in model_inputs.items()}
+                labels = labels.to(device)
                         
-            output = model(**inputs)
-            logits = output.logits if hasattr(output, "logits") else output
-            loss = loss_fn(logits, labels)
+            output = model(**model_inputs)
+            if loss_fn is None:
+                if not hasattr(output, "loss") or output.loss is None:
+                    raise ValueError(
+                        "loss_fn is required when the model does not return a loss."
+                    )
+                loss = output.loss
+            else:
+                if labels is None:
+                    raise ValueError("The dataloader must provide labels when loss_fn is used.")
+                logits = output.logits if hasattr(output, "logits") else output
+                loss = loss_fn(logits, labels)
 
-            batch_size = labels.size(0)
+            batch_size = next(value for value in model_inputs.values() if value.ndim > 0).size(0)
             total_loss += loss.item() * batch_size
             num_samples += batch_size
 
@@ -79,11 +110,18 @@ def train_model_supervised(model, optimizer, loss_fn, dataloader, device, eval_f
     num_samples = 0                   
     num_labels = 0
 
-    for batch, (inputs, labels) in enumerate(dataloader):                       # Iterate over batches of data
-        inputs = {key: value.to(device) for key, value in inputs.items()}
-        labels = labels.to(device)
+    for batch, batch_data in enumerate(dataloader):
+        labels = None
 
-        output = model(**inputs)                                                #forward pass
+        if isinstance(batch_data, Mapping):
+            model_inputs = {key: value.to(device) for key, value in batch_data.items()}
+            labels = model_inputs.get("labels")
+        else:
+            model_inputs, labels = batch_data
+            model_inputs = {key: value.to(device) for key, value in model_inputs.items()}
+            labels = labels.to(device)
+
+        output = model(**model_inputs)                                                #forward pass
         logits = output.logits
         loss = loss_fn(logits, labels)                                          #calc loss
         pred = eval_func(logits)                                                #pred
@@ -299,3 +337,61 @@ def validate_model_distillation(student_model, teacher_model, dataloader, device
         )
     return avg_loss, avg_accuracy_total, avg_accuracy_individual
 
+def benchmark_phase(model, dataloader, device, warmup=5, measure=30, lr=5e-5, use_amp=False):
+    """Time real training steps, then restore the model's weights so the benchmark leaves no trace."""
+    model.to(device)
+    model.train()
+    backup = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=lr)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
+    cuda = device.type == "cuda"
+    if cuda:
+        torch.cuda.reset_peak_memory_stats()
+
+    data_t, step_t, real_tok, padded_tok, seqs = 0.0, 0.0, 0, 0, 0
+    if len(dataloader) == 0:
+        raise ValueError("benchmark_phase requires a non-empty dataloader")
+    it = iter(dataloader)
+
+    for i in range(warmup + measure):
+        t0 = time.perf_counter()
+        try:
+            batch = next(it)                               # includes tokenization + masking in the collator
+        except StopIteration:
+            it = iter(dataloader)
+            batch = next(it)
+        batch = {k: v.to(device) for k, v in batch.items()}
+        if cuda: torch.cuda.synchronize()
+        t1 = time.perf_counter()
+
+        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+            loss = model(**batch).loss
+        optimizer.zero_grad(set_to_none=True)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        if cuda: torch.cuda.synchronize()
+        t2 = time.perf_counter()
+
+        if i >= warmup:                                    # skip warmup: CUDA init, cudnn autotune, etc.
+            data_t += t1 - t0
+            step_t += t2 - t1
+            real_tok += batch["attention_mask"].sum().item()
+            padded_tok += batch["input_ids"].numel()
+            seqs += batch["input_ids"].size(0)
+
+    model.load_state_dict(backup)                          # undo the benchmark's weight updates
+
+    per_batch = (data_t + step_t) / measure
+    n_batches = len(dataloader)
+    print(f"data loading : {1000 * data_t / measure:8.1f} ms/batch")
+    print(f"compute      : {1000 * step_t / measure:8.1f} ms/batch")
+    print(f"total        : {1000 * per_batch:8.1f} ms/batch  ({seqs / measure:.1f} seqs/batch)")
+    print(f"throughput   : {padded_tok / (data_t + step_t):,.0f} padded tok/s "
+          f"({real_tok / (data_t + step_t):,.0f} real tok/s, {100 * real_tok / padded_tok:.0f}% non-padding)")
+    if cuda:
+        print(f"peak VRAM    : {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+    print(f"estimated full epoch: {per_batch * n_batches / 3600:.2f} h  ({n_batches:,} batches)")
+
+
+    
