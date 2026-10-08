@@ -29,7 +29,7 @@ class MlmCollator:
             text = "\n".join(messages[start:])[:self.char_cap]                      #limits the number of characters to be tokenized
                         
             tokenized = self.tokenizer(
-                text
+                text,
                 truncation=True,
                 max_length=self.max_length,
                 return_overflowing_tokens=self.max_chunks > 1,

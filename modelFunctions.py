@@ -45,14 +45,14 @@ def train_model_unsupervised(model, optimizer, dataloader, device, loss_fn=None,
         total_loss += loss.item() * batch_size
         num_samples += batch_size
 
-        if batch % 100 == 0 and prints >= 2:
-            current = (batch + 1) * batch_size
-            print(f"loss: {loss.item():>7f}  "f"[{current:>5d}/{len(dataloader.dataset):>5d}]")
-
+        if batch == 0 or batch % 100 == 0 and prints >= 2:
+            loss, current = loss.item(), (batch + 1) * batch_size
+            print(f"US Train loss: [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
+            
     avg_loss = total_loss / num_samples
 
-    if prints >= 1:
-        print(f"Domain Adaptation Epoch Done - Loss: {avg_loss:>7f}")
+    if prints >= 5:
+        print(f"train_model_unsupervised - loss: {avg_loss:>7f}")
 
     return avg_loss
 
@@ -90,13 +90,14 @@ def validate_model_unsupervised(model, dataloader, device, loss_fn=None, prints=
             total_loss += loss.item() * batch_size
             num_samples += batch_size
 
-            if batch  == 0 or batch % 100 == 0 and prints >= 2:
-                print(f"Validation loss: {loss.item():>7f}")
+            if batch == 0 or batch % 100 == 0 and prints >= 2:
+                loss, current = loss.item(), (batch + 1) * batch_size
+                print(f"US Val loss: [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
 
     avg_loss = total_loss / num_samples
 
-    if prints >= 1:
-        print(f"Domain Adaptation Validation Done - Loss: {avg_loss:>7f}")
+    if prints >= 5:
+        print(f"validate_model_unsupervised - loss: {avg_loss:>7f}")
 
     return avg_loss
 
@@ -137,17 +138,16 @@ def train_model_supervised(model, optimizer, loss_fn, dataloader, device, eval_f
         num_samples += batch_size    
         num_labels += labels.numel()
         
-        if batch  == 0 or batch % 100 == 0 and prints >= 2:
+        if batch == 0 or batch % 100 == 0 and prints >= 2:
             loss, current = loss.item(), (batch + 1) * batch_size
-            if prints >= 2:
-                print(f"loss: {loss:>7f}  [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
+            print(f"S Train loss: [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
 
     avg_loss = total_loss / num_samples                                         #bookkeeping
     avg_accuracy_total = correct_total / num_samples
     avg_accuracy_individual = correct_individual / num_labels
 
-    if prints >= 1:
-      print(f"Training Epoch Done - Train loss: {avg_loss:>7f}, Accuracy: {(100*avg_accuracy_total):>0.1f}% (Total), {(100*avg_accuracy_individual):>0.1f}% (Individual)")
+    if prints >= 5:
+      print(f"train_model_supervised - loss: {avg_loss:>7f}, Accuracy: {(100*avg_accuracy_total):>0.1f}% (Total), {(100*avg_accuracy_individual):>0.1f}% (Individual)")
 
     return avg_loss, avg_accuracy_total, avg_accuracy_individual
 
@@ -181,16 +181,15 @@ def validate_model_supervised(model, loss_fn, dataloader, device, eval_func = ev
         
             if batch == 0 or batch % 100 == 0 and prints >= 2:
                 val_loss, current = val_loss.item(), (batch + 1) * batch_size
-                if prints >= 2:
-                    print(f"Val loss: {val_loss:>7f}  [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
+                print(f"S Val loss: [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
 
     #bookkeeping
     val_avg_loss = val_total_loss / num_samples
     val_avg_accuracy_total = correct_total / num_samples
     val_avg_accuracy_individual = correct_individual / num_labels
 
-    if prints >= 2:
-        print(f"Validation Done - Avg loss: {val_avg_loss:>8f}, Accuracy: {(100*val_avg_accuracy_total):>0.1f}% (Total), {(100*val_avg_accuracy_individual):>0.1f}% (Individual) \n")
+    if prints >= 5:
+        print(f"validate_model_supervised - loss: {val_avg_loss:>8f}, Accuracy: {(100*val_avg_accuracy_total):>0.1f}% (Total), {(100*val_avg_accuracy_individual):>0.1f}% (Individual)")
 
     return val_avg_loss, val_avg_accuracy_total, val_avg_accuracy_individual
 
@@ -225,16 +224,15 @@ def test_model_supervised(model, loss_fn, dataloader, device, eval_func = eval_s
 
             if batch == 0 or batch % 100 == 0 and prints >= 2:
                 loss, current = test_loss.item(), (batch + 1) * batch_size
-                if prints >= 2:
-                    print(f"Test loss: {test_loss:>7f}  [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
+                print(f"S Test loss:  [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
    
     #bookkeeping
     test_avg_loss = test_total_loss / num_samples
     test_avg_accuracy_total = correct_total / num_samples
     test_avg_accuracy_individual = correct_individual / num_labels
 
-    if prints >= 1:
-        print(f"Test Done - Avg loss: {test_avg_loss:>8f}, Accuracy: {(100*test_avg_accuracy_total):>0.1f}% (Total), {(100*test_avg_accuracy_individual):>0.1f}% (Individual) \n")
+    if prints >= 5:
+        print(f"test_model_supervised - loss: {test_avg_loss:>8f}, Accuracy: {(100*test_avg_accuracy_total):>0.1f}% (Total), {(100*test_avg_accuracy_individual):>0.1f}% (Individual)")
 
     return test_avg_loss, test_avg_accuracy_total, test_avg_accuracy_individual
 
@@ -279,15 +277,14 @@ def train_model_distill(student_model, teacher_model, optimizer, dataloader, dev
         
         if batch  == 0 or batch % 100 == 0 and prints >= 2:
             loss, current = total_loss.item(), (batch + 1) * batch_size
-            if prints >= 2:
-                print(f"loss: {loss:>7f}  [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
+            print(f"S Dist loss: [{current:>5d}/{len(dataloader.dataset):>5d}]") #print update
 
     student_avg_loss = dis_total_loss / num_samples                                         #bookkeeping
     student_avg_accuracy_total = correct_total / num_samples
     student_avg_accuracy_individual = correct_individual / num_labels
 
-    if prints >= 1:
-      print(f"Distilling Epoch Done - Total loss: {student_avg_loss:>7f}, Accuracy: {(100*student_avg_accuracy_total):>0.1f}% (Total), {(100*student_avg_accuracy_individual):>0.1f}% (Individual)")
+    if prints >= 5:
+      print(f"train_model_distill - loss: {student_avg_loss:>7f}, Accuracy: {(100*student_avg_accuracy_total):>0.1f}% (Total), {(100*student_avg_accuracy_individual):>0.1f}% (Individual)")
 
     return student_avg_loss, student_avg_accuracy_total, student_avg_accuracy_individual
 
@@ -326,12 +323,13 @@ def validate_model_distillation(student_model, teacher_model, dataloader, device
             num_samples += batch_size
             num_labels += labels.numel()
 
+
     avg_loss = total_loss / num_samples
     avg_accuracy_total = correct_total / num_samples
     avg_accuracy_individual = correct_individual / num_labels
     if prints >= 1:
         print(
-            f"Distillation Validation Done - Loss: {avg_loss:>7f}, "
+            f"validate_model_distillation - loss: {avg_loss:>7f}, "
             f"Accuracy: {(100 * avg_accuracy_total):>0.1f}% (Total), "
             f"{(100 * avg_accuracy_individual):>0.1f}% (Individual)"
         )
