@@ -59,7 +59,8 @@ class SupervisedCollator:
             max_length=self.max_length,
             return_tensors="pt",
         )
-        return tokenized, torch.stack(labels)
+        tokenized["labels"] = torch.stack(labels)
+        return tokenized
 
 
 class DualSupervisedCollator:
@@ -178,4 +179,3 @@ if __name__ == "__main__":
         for labels, message in batch: ##doens't work, gets all messages then all labels, need to fix this??
             print(f"### JIGSAW [{i}] MESSAGE ### \n {message}")
             print(f"### JIGSAW [{i}] LABEL  ### \n {labels}")
-

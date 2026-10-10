@@ -335,61 +335,31 @@ def validate_model_distillation(student_model, teacher_model, dataloader, device
         )
     return avg_loss, avg_accuracy_total, avg_accuracy_individual
 
-def benchmark_phase(model, dataloader, device, warmup=5, measure=30, lr=5e-5, use_amp=False):
-    """Time real training steps, then restore the model's weights so the benchmark leaves no trace."""
-    model.to(device)
-    model.train()
-    backup = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=lr)
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
-    cuda = device.type == "cuda"
-    if cuda:
-        torch.cuda.reset_peak_memory_stats()
+def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_last: int = 1, verbose: bool = False, return_trainable: bool = False):
+    backbone = getattr(model, "model", model)
+    embeddings = getattr(backbone, "embeddings", None)
 
-    data_t, step_t, real_tok, padded_tok, seqs = 0.0, 0.0, 0, 0, 0
-    if len(dataloader) == 0:
-        raise ValueError("benchmark_phase requires a non-empty dataloader")
-    it = iter(dataloader)
-
-    for i in range(warmup + measure):
-        t0 = time.perf_counter()
-        try:
-            batch = next(it)                               # includes tokenization + masking in the collator
-        except StopIteration:
-            it = iter(dataloader)
-            batch = next(it)
-        batch = {k: v.to(device) for k, v in batch.items()}
-        if cuda: torch.cuda.synchronize()
-        t1 = time.perf_counter()
-
-        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-            loss = model(**batch).loss
-        optimizer.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        if cuda: torch.cuda.synchronize()
-        t2 = time.perf_counter()
-
-        if i >= warmup:                                    # skip warmup: CUDA init, cudnn autotune, etc.
-            data_t += t1 - t0
-            step_t += t2 - t1
-            real_tok += batch["attention_mask"].sum().item()
-            padded_tok += batch["input_ids"].numel()
-            seqs += batch["input_ids"].size(0)
-
-    model.load_state_dict(backup)                          # undo the benchmark's weight updates
-
-    per_batch = (data_t + step_t) / measure
-    n_batches = len(dataloader)
-    print(f"data loading : {1000 * data_t / measure:8.1f} ms/batch")
-    print(f"compute      : {1000 * step_t / measure:8.1f} ms/batch")
-    print(f"total        : {1000 * per_batch:8.1f} ms/batch  ({seqs / measure:.1f} seqs/batch)")
-    print(f"throughput   : {padded_tok / (data_t + step_t):,.0f} padded tok/s "
-          f"({real_tok / (data_t + step_t):,.0f} real tok/s, {100 * real_tok / padded_tok:.0f}% non-padding)")
-    if cuda:
-        print(f"peak VRAM    : {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
-    print(f"estimated full epoch: {per_batch * n_batches / 3600:.2f} h  ({n_batches:,} batches)")
-
-
+    if freeze_embeddings:       
+        if embeddings is not None:
+            for parameter in embeddings.parameters():
+                parameter.requires_grad = False
+        
+    layers = getattr(backbone, "layers", None)
     
+    if layers is not None:
+        for layer in list(layers)[:-keep_last]:     #freeze all layers except the last 'keep_last' layers 
+            for parameter in layer.parameters():
+                parameter.requires_grad = False
+
+    if verbose:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        frozen_params = total_params - trainable_params
+        print(f"Total parameters: {total_params}, Trainable parameters: {trainable_params}, Frozen parameters: {frozen_params}, Trainable: {(trainable_params / total_params) * 100:.2f}%")
+
+    if return_trainable:
+        trainable_params_list = filter(lambda p: p.requires_grad, model.parameters())
+        return trainable_params_list
+    else:
+        return None
+
