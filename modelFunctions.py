@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as nnF
 import time
+from pathlib import Path
+from torch.utils.data import Dataset
 
 def eval_sigmoid_05(logits):
     return torch.sigmoid(logits) > 0.5
@@ -363,3 +365,50 @@ def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_l
     else:
         return None
 
+class CachedLogitsDataset(Dataset):
+    def __init__(self, seed, texts, labels, logits):
+        self.seed = seed
+        self.texts = texts
+        self.labels = labels
+        self.logits = logits
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        return {
+            "text": self.texts[idx],
+            "labels": self.labels[idx],
+            "logits": self.logits[idx]
+        }
+
+def cache_logits(model: torch.nn.Module, dataset: Dataset, collator, cache_path: Path, batch_size: int, device: torch.device, seed: int = 42) -> CachedLogitsDataset:    
+    if cache_path.exists():                                 #If the data already exists, just load and return it
+        print(f"Loading cached logits from {cache_path}")
+        dataset_logits = torch.load(cache_path)
+        return CachedLogitsDataset(dataset_logits["seed"], dataset_logits["texts"], dataset_logits["labels"], dataset_logits["logits"])
+
+    texts = [] 
+    labels = []
+
+    for text, item_labels in dataset:                       #Get all text and labels from the dataset
+        texts.append(text)
+        labels.append(item_labels)
+    labels = torch.stack(labels)
+
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collator)
+    model.eval().to(device)
+    
+    logits = []
+    with torch.no_grad():                                   #Compute logits without tracking gradients
+        for batch in dataloader:
+            inputs = {key: value.to(device) for key, value in batch.items()}
+            output = model(**inputs)
+            logits.append(output.logits.cpu())
+
+    logits_cat = torch.cat(logits)                                                           #Combine all logits into a single tensor
+    dataset_logits = {"seed": seed, "texts": texts, "labels": labels, "logits": logits_cat}  #Dict with seed, texts, labels, and logits
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)    #Create the parent directory if it doesn't exist
+    torch.save(dataset_logits, cache_path)                  #Save the dataset_logits dictionary to the specified cache_path
+    return CachedLogitsDataset(seed, texts, labels, logits_cat)
