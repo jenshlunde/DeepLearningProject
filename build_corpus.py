@@ -37,6 +37,7 @@ Add --limit-channels N to do a quick test run on just the first N channels.
 
 import argparse
 import json
+import random
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -101,14 +102,125 @@ def build_spam_removed_corpus(original_convs, detoxed_convs, detox_antispam_conv
     return result
 
 
+def sample_jsonl_by_channel(input_path, output_path, max_bytes, seed=42):
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+
+    channel_stats = defaultdict(lambda: {"bytes": 0, "lines": 0})
+    with input_path.open("rb") as input_file:
+        for line_number, raw_line in enumerate(input_file, start=1):
+            if not raw_line.strip():
+                continue
+            try:
+                record = json.loads(raw_line)
+                channel_id = str(record["channel_id"])
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise ValueError(
+                    f"Invalid JSONL record at line {line_number}"
+                ) from exc
+            channel_stats[channel_id]["bytes"] += len(raw_line)
+            channel_stats[channel_id]["lines"] += 1
+
+    if not channel_stats:
+        raise ValueError(f"No channel records found in {input_path}")
+
+    # Water-fill equal quotas: channels smaller than the equal share give
+    # their unused budget back to the remaining channels.
+    quotas = {}
+    remaining_channels = set(channel_stats)
+    remaining_budget = max_bytes
+    while remaining_channels:
+        equal_share = remaining_budget // len(remaining_channels)
+        small_channels = {
+            channel_id
+            for channel_id in remaining_channels
+            if channel_stats[channel_id]["bytes"] <= equal_share
+        }
+        if not small_channels:
+            for channel_id in remaining_channels:
+                quotas[channel_id] = equal_share
+            break
+        for channel_id in small_channels:
+            quotas[channel_id] = channel_stats[channel_id]["bytes"]
+            remaining_budget -= quotas[channel_id]
+            remaining_channels.remove(channel_id)
+
+    selected_bytes = defaultdict(int)
+    selected_lines = defaultdict(int)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with input_path.open("rb") as input_file, output_path.open("wb") as output_file:
+        channel_seen_bytes = defaultdict(int)
+        rng_by_channel = {
+            channel_id: random.Random(f"{seed}:{channel_id}")
+            for channel_id in channel_stats
+        }
+
+        for line_number, raw_line in enumerate(input_file, start=1):
+            if not raw_line.strip():
+                continue
+            record = json.loads(raw_line)
+            channel_id = str(record["channel_id"])
+            line_size = len(raw_line)
+            channel_seen_bytes[channel_id] += line_size
+            quota = quotas[channel_id]
+            remaining_quota = quota - selected_bytes[channel_id]
+            remaining_channel_bytes = (
+                channel_stats[channel_id]["bytes"]
+                - channel_seen_bytes[channel_id]
+                + line_size
+            )
+
+            if remaining_quota <= 0 or line_size > remaining_quota:
+                continue
+
+            # Adaptive probability gives every line an unbiased chance while
+            # steering the selected byte total towards the channel quota.
+            probability = min(1.0, remaining_quota / remaining_channel_bytes)
+            if rng_by_channel[channel_id].random() <= probability:
+                output_file.write(raw_line)
+                selected_bytes[channel_id] += line_size
+                selected_lines[channel_id] += 1
+
+    total_selected = sum(selected_bytes.values())
+    print(
+        f"Sampled {len(selected_lines):,} channels, "
+        f"{sum(selected_lines.values()):,} conversations, "
+        f"{total_selected / (1024 * 1024):.2f} MiB to {output_path}"
+    )
+    return dict(selected_bytes)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--original", required=True, help="Path to the 'Original data' folder")
-    parser.add_argument("--detoxed", required=True, help="Path to the 'Detoxed data' folder")
-    parser.add_argument("--detox-antispam", required=True, help="Path to the 'Detoxed and antispam data' folder")
-    parser.add_argument("--output", required=True, help="Output .jsonl path")
+    parser.add_argument("--original", help="Path to the 'Original data' folder")
+    parser.add_argument("--detoxed", help="Path to the 'Detoxed data' folder")
+    parser.add_argument("--detox-antispam", help="Path to the 'Detoxed and antispam data' folder")
+    parser.add_argument("--output", help="Output .jsonl path for corpus construction")
     parser.add_argument("--limit-channels", type=int, default=None, help="Only process the first N channels (for a quick test run)")
+    parser.add_argument("--sample-from", help="Existing JSONL corpus to sample by channel")
+    parser.add_argument("--sample-output", help="Output JSONL path for balanced sampling")
+    parser.add_argument("--max-output-mb", type=float, help="Maximum sampled output size in MiB")
     args = parser.parse_args()
+
+    sampling_args = (args.sample_from, args.sample_output, args.max_output_mb)
+    if any(value is not None for value in sampling_args):
+        if not all(value is not None for value in sampling_args):
+            parser.error("--sample-from, --sample-output, and --max-output-mb must be used together")
+        sample_jsonl_by_channel(
+            args.sample_from,
+            args.sample_output,
+            int(args.max_output_mb * 1024 * 1024),
+        )
+        return
+
+    if not all((args.original, args.detoxed, args.detox_antispam, args.output)):
+        parser.error(
+            "--original, --detoxed, --detox-antispam, and --output are required "
+            "when building a corpus"
+        )
 
     original_folder = Path(args.original)
     detoxed_folder = Path(args.detoxed)
