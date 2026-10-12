@@ -5,6 +5,7 @@ import torch.nn.functional as nnF
 import time
 from pathlib import Path
 from torch.utils.data import Dataset
+from transformers import Trainer
 
 def eval_sigmoid_05(logits):
     return torch.sigmoid(logits) > 0.5
@@ -337,7 +338,7 @@ def validate_model_distillation(student_model, teacher_model, dataloader, device
         )
     return avg_loss, avg_accuracy_total, avg_accuracy_individual
 
-def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_last: int = 1, verbose: bool = False, return_trainable: bool = False):
+def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_last: int = None, verbose: bool = False, return_trainable: bool = False):
     backbone = getattr(model, "model", model)
     embeddings = getattr(backbone, "embeddings", None)
 
@@ -391,10 +392,24 @@ def cache_logits(model: torch.nn.Module, dataset: Dataset, collator, cache_path:
     texts = [] 
     labels = []
 
-    for text, item_labels in dataset:                       #Get all text and labels from the dataset
-        texts.append(text)
-        labels.append(item_labels)
-    labels = torch.stack(labels)
+    for index in range(len(dataset)):
+        item = dataset[index]
+        if isinstance(item, Mapping):                       #If the item is a mapping (like the jigsaw dataset?), extract the text and labels
+            texts.append(item["text"])
+            labels.append(item.get("labels"))
+        elif isinstance(item, tuple) and len(item) == 2:    #If the item is a tuple (like the jigsaw dataset?), extract the text and labels
+            texts.append(item[0])
+            labels.append(item[1])
+        else:                                               #Otherwise, there's no label, like the jef1056 dataset
+            texts.append(item)
+            labels.append(None)
+
+    if all(item_label is not None for item_label in labels):
+        labels = torch.stack(labels)
+    elif any(item_label is not None for item_label in labels):
+        raise ValueError("A dataset must provide labels for every item or for none of them.")
+    else:
+        labels = None
 
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collator)
     model.eval().to(device)
@@ -412,3 +427,61 @@ def cache_logits(model: torch.nn.Module, dataset: Dataset, collator, cache_path:
     cache_path.parent.mkdir(parents=True, exist_ok=True)    #Create the parent directory if it doesn't exist
     torch.save(dataset_logits, cache_path)                  #Save the dataset_logits dictionary to the specified cache_path
     return CachedLogitsDataset(seed, texts, labels, logits_cat)
+
+
+class DistillationTrainer(Trainer):
+    def __init__(self, *args, alpha: float = .5, temperature: float = 2., **kwargs):
+        super().__init__(*args, **kwargs)                                               #Initialize the base Trainer class with args and kwargs
+        self.alpha = alpha
+        self.temperature = temperature
+
+    def compute_loss(self, model: torch.nn.Module, inputs: dict, return_outputs: bool = False, num_items_in_batch: int = None):
+        teacher_logits = inputs.pop("teacher_logits")                                  #Extract teacher logits from inputs
+        labels = inputs["labels"].float()                                              #Get labels and convert to float
+        student_output = model(**inputs)                                                      #Forward pass through the student model
+        student_logits = student_output.logits                                                #Get student logits
+
+        t = self.temperature
+        soft_targets = torch.sigmoid(teacher_logits / t)                                                #teacher targets
+        soft_loss = nnF.binary_cross_entropy_with_logits(student_logits / t, soft_targets) * (t ** 2)   #Soft loss
+        hard_loss = nnF.binary_cross_entropy_with_logits(student_logits, labels)                        #Hard loss
+        total_loss = (self.alpha * hard_loss) + ((1 - self.alpha) * soft_loss)                          #Total loss
+
+        if return_outputs:
+            return (total_loss, student_output)  
+        else:
+            return total_loss
+
+
+class DualDistillationTrainer(Trainer):
+    def __init__(self, *args, alpha: float = .5, temperature: float = 2., **kwargs):
+        super().__init__(*args, **kwargs)                                               #Initialize the base Trainer class with args and kwargs
+        self.alpha = alpha
+        self.temperature = temperature
+
+    def compute_loss(self, model: torch.nn.Module, inputs: dict, return_outputs: bool = False, num_items_in_batch: int = None):
+
+        # Extract teacher logits, labels, and labeled mask from inputs
+        teacher_logits = inputs.pop("teacher_logits")
+        labels = inputs.pop("labels").float()
+        labeled_mask = inputs.pop("labeled_mask").bool()
+
+        # Forward pass through the student model
+        student_output = model(**inputs)
+        student_logits = student_output.logits
+
+        # Compute the soft targets and per-sample soft loss
+        t = self.temperature
+        soft_targets = torch.sigmoid(teacher_logits / t)
+        per_sample_soft_loss = nnF.binary_cross_entropy_with_logits(student_logits / t, soft_targets, reduction="none").mean(dim=1) * (t ** 2)
+
+        # For labeled samples, add the hard loss according to alpha. 
+        # Averaging these per-sample losses handles unlabeled-only, labeled-only, and mixed batches uniformly.
+        per_sample_loss = per_sample_soft_loss.clone()
+        if labeled_mask.any():                                                  #if any labeled data
+            per_sample_hard_loss = nnF.binary_cross_entropy_with_logits(student_logits[labeled_mask],labels[labeled_mask],reduction="none",).mean(dim=1)
+            per_sample_loss[labeled_mask] = ((1 - self.alpha) * per_sample_soft_loss[labeled_mask] + self.alpha * per_sample_hard_loss)
+
+        total_loss = per_sample_loss.mean()
+
+        return (total_loss, student_output) if return_outputs else total_loss
