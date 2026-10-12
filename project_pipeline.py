@@ -23,17 +23,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs-da", type=int, default=100)
     parser.add_argument("--epochs-tl", type=int, default=100)
     parser.add_argument("--epochs-distill", type=int, default=100)
-    parser.add_argument("--batch-size-da", type=int, default=16)
+    parser.add_argument("--batch-size-da", type=int, default=8)             #DA usually has larger datasets, so smaller batch size to fit in memory
     parser.add_argument("--batch-size-tl", type=int, default=16)
-    parser.add_argument("--batch-size-dis", type=int, default=16)
+    parser.add_argument("--batch-size-dis", type=int, default=64)           #Student models are smaller, so more memory available for larger batch size
     parser.add_argument("--num-workers-da", type=float, default=4)
     parser.add_argument("--num-workers-tl", type=float, default=4)
     parser.add_argument("--num-workers-dis", type=float, default=4)
-    parser.add_argument("--max-length-da", type=int, default=512)
-    parser.add_argument("--max-length-tl", type=int, default=512)
-    parser.add_argument("--max-length-dis", type=int, default=512)
+    parser.add_argument("--max-length-da", type=int, default=256)
     parser.add_argument("--learning-rate-da", type=float, default=5e-5)
-    parser.add_argument("--learning-rate-tl", type=float, default=5e-5)
+    parser.add_argument("--learning-rate-tl", type=float, default=1e-5)
     parser.add_argument("--learning-rate-dis", type=float, default=5e-5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=.5)
@@ -44,8 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--do-DA", action="store_true", default=False)
     parser.add_argument("--do-TL", action="store_true", default=False)
     parser.add_argument("--do-DIS", action="store_true", default=False)
-    parser.add_argument("--do-STUDENT_TESTS", action="store_true", default=False)
+    parser.add_argument("--do-STUDENT_TESTS", action="store_true", default=False)    
     parser.add_argument("--test-run", action="store_true", default=False)
+    parser.add_argument("--full-run", action="store_true", default=False)
     return parser
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -105,6 +104,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     TL_MODEL_PATH = BEST_TL_TEACHER_PATH / "MODEL"
     CACHE_LOGITS_PATH = output_path / "logits_cache"
 
+    if args.full_run:
+        print("### RUNNING FULL TRAINING PIPELINE ###")
+        args.do_DA = True
+        args.do_TL = True
+        args.do_DIS = True
+        args.do_STUDENT_TESTS = True
     if args.test_run:   
         print("### RUNNING TEST - EPOCHS AND DATALENGTHS REDUCED ###")
         #SHORT DATASETS FOR TESTS
@@ -115,8 +120,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         args.epochs_tl = 3
         args.epochs_dis = 3
         args.max_length_da = 32
-        args.max_length_tl = 32
-        args.max_length_dis = 32
         #TEST ALL PHASES
         args.do_DA = True
         args.do_TL = True
@@ -164,9 +167,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         data_loader_t1 = time.perf_counter()
         print(f"Data loading time: {data_loader_t1 - data_loader_t0:.2f} seconds")
 
-        # Freeze some of the model to lighten work - embeddings and half of the encoder layers
+        # Freeze some of the model to lighten work - half of the encoder layers - dont freeze any embedding as that is what learns words
         num_layers_DA = len(teacher_mlm.model.layers) // 2 
-        modelFunctions.freeze_layers(teacher_mlm, freeze_embeddings=True, keep_last=num_layers_DA, verbose=True) 
+        modelFunctions.freeze_layers(teacher_mlm, freeze_embeddings=False, keep_last=num_layers_DA, verbose=True) 
 
         #Training setup - DA
         training_args_da = TrainingArguments(
@@ -219,12 +222,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if teacher_tokenizer is None:
             teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE) #If not initilized in DA phase, initialize here
 
-        jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer,max_length=args.max_length_tl)
+        jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer)
             
         print("Re-initializing teacher model for transfer learning.")
         # Models automatically uses BinaryCrossEntropy with logits loss when num_labels > 1 and problem_type="multi_label_classification", so no need to specify loss function here.
         teacher_model = AutoModelForSequenceClassification.from_pretrained(DA_MODEL_PATH, num_labels=6,problem_type="multi_label_classification")
-        modelFunctions.freeze_layers(teacher_model, freeze_embeddings=True, keep_last=3, verbose=True)
+        modelFunctions.freeze_layers(teacher_model, freeze_embeddings=True, keep_last=1, verbose=True)
         
         #Training setup - TL
         training_args_TL = TrainingArguments(
@@ -268,13 +271,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             teacher_model = AutoModelForSequenceClassification.from_pretrained(TL_MODEL_PATH, num_labels=6,problem_type="multi_label_classification")
     
         #Freeze all of the model   
-        num_layers_DIS = len(teacher_model.model.layers)
-        modelFunctions.freeze_layers(teacher_model, freeze_embeddings=True, keep_last=num_layers_DIS, verbose=True)
+        modelFunctions.freeze_layers(teacher_model, verbose=True)
 
         #REDUCE TOKENIZER???
         if teacher_tokenizer is None:
             teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE) 
-        #student_tokenizer = AutoTokenizer.from_pretrained(STUDENT_BASE)                            ##?? should look more into tokenizers
+        #THIS SHOULD BE A SMALLER TOKENIZER THAN THE TEACHER (CUSTOM?), BUT FOR NOW USE SAME AS TEACHER
+        student_tokenizer = AutoTokenizer.from_pretrained(STUDENT_BASE)                            ##?? should look more into tokenizers
 
         #if not intialized in prior phases, initialize here
         if jigsaw_data_set is None:
@@ -284,57 +287,77 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             jigsaw_train, jigsaw_val = random_split(jigsaw_data_set, [jigsaw_train_size, jigsaw_val_size], generator=torch.Generator().manual_seed(args.seed))
 
 
-        jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer,max_length=args.max_length_tl)
-        train_cache = modelFunctions.cache_logits(teacher_model, jigsaw_train, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "train_logits_cache", batch_size=args.batch_size_dis, device=device, seed=args.seed)
-        val_cache = modelFunctions.cache_logits(teacher_model, jigsaw_val, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "val_logits_cache", batch_size=args.batch_size_dis, device=device, seed=args.seed)
-                
+        jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer)
+        jigsaw_train_cache = modelFunctions.cache_logits(teacher_model, jigsaw_train, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "train_logits_cache", batch_size=args.batch_size_dis, device=device, seed=args.seed)
+        jigsaw_val_cache = modelFunctions.cache_logits(teacher_model, jigsaw_val, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "val_logits_cache", batch_size=args.batch_size_dis, device=device, seed=args.seed)
+
+        jef1056_dataset = jsonDataset.jef1056dataset(JEF_1056_DATASET_PATH)
+        jef_train_size = int(0.9 * len(jef1056_dataset))
+        jef_val_size = len(jef1056_dataset) - jef_train_size
+        jef_train, jef_val = random_split(jef1056_dataset, [jef_train_size, jef_val_size], generator=torch.Generator().manual_seed(args.seed))
+        jef_collator = jsonDataset.TextCollator(teacher_tokenizer, max_length=args.max_length_da)
+
+        jef_train_cache = modelFunctions.cache_logits(teacher_model, jef_train, jef_collator,
+                                                      cache_path=CACHE_LOGITS_PATH / "jef_train_logits_cache",
+                                                      batch_size=args.batch_size_dis, device=device, seed=args.seed,
+                                                      )
+        jef_val_cache = modelFunctions.cache_logits(teacher_model, jef_val, jef_collator,
+                                                    cache_path=CACHE_LOGITS_PATH / "jef_val_logits_cache",
+                                                    batch_size=args.batch_size_dis, device=device, seed=args.seed,
+                                                    )                
+
+        ### Create dual dataset for distillation - outside the loop to avoid reloading the caches for each student model and give each student the same data 
+        dual_train = jsonDataset.DualDataset(jef_train_cache, jigsaw_train_cache)
+        dual_val = jsonDataset.DualDataset(jef_val_cache, jigsaw_val_cache)
 
         ## Student model(s)
         STUDENT_BASE = "bert-base-uncased"
         student_model_1 = AutoModelForSequenceClassification.from_pretrained(STUDENT_BASE, num_labels=6, problem_type="multi_label_classification")
+        modelFunctions.freeze_layers(student_model_1, embedding_layers=True, keep_last=1, verbose=True) #To lighten during testing
         student_model_2 = AutoModelForSequenceClassification.from_pretrained(STUDENT_BASE, num_labels=6, problem_type="multi_label_classification")
+        modelFunctions.freeze_layers(student_model_2, embedding_layers=True, keep_last=1, verbose=True) #To lighten during testing
 
         student_models = [student_model_1, student_model_2]
 
+        training_args_DIS = TrainingArguments(
+            output_dir=BEST_STUDENT_PATH,                       #Where model predictions and checkpoints will be written
+            per_device_train_batch_size=args.batch_size_dis,    #Default = 8
+            num_train_epochs=args.epochs_dis,                   #Default = 3
+            learning_rate=args.learning_rate_dis,               #Default = 5e-5
+            dataloader_num_workers=args.num_workers_dis,        #Default = 0
+            dataloader_persistent_workers=True,                 #Default = False
+            load_best_model_at_end=True,                        #Default = False
+            eval_strategy="epoch",
+            save_strategy="epoch",
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
+            save_total_limit=2,
+            remove_unused_columns=False,
+            )
+        callback_args_DIS = [EarlyStoppingCallback(early_stopping_patience=args.patience_dis)]
+            
         for idx, student_model in enumerate(student_models):
 
             BEST_STUDENT_PATH = BEST_STUDENTS_PATH / f"student_{idx+1}"
             BEST_STUDENT_PATH.mkdir(parents=True, exist_ok=True)
 
-            training_args_DIS = TrainingArguments(
-                output_dir=BEST_STUDENT_PATH,                       #Where model predictions and checkpoints will be written
-                per_device_train_batch_size=args.batch_size_dis,     #Default = 8
-                num_train_epochs=args.epochs_dis,                    #Default = 3
-                learning_rate=args.learning_rate_dis,                #Default = 5e-5
-                dataloader_num_workers=args.num_workers_dis,         #Default = 0
-                dataloader_persistent_workers=True,                 #Default = False
-                load_best_model_at_end=True,                        #Default = False
-                eval_strategy="epoch",
-                save_strategy="epoch",
-                metric_for_best_model="eval_loss",
-                greater_is_better=False,
-                save_total_limit=2,
+            DIS_Trainer = modelFunctions.DualDistillationTrainer(
+                model=student_model,
+                train_dataset=dual_train,
+                eval_dataset=dual_val,
+                data_collator=jsonDataset.DualDistillationCollator(student_tokenizer, args.max_length_da),
+                callbacks=callback_args_DIS,
+                args=training_args_DIS,
+                alpha=args.alpha,
+                temperature=args.temperature,
             )
-            callback_args_DIS = [EarlyStoppingCallback(early_stopping_patience=args.patience_dis)]
-            
-            #DIS_Trainer = DistillationTrainer(model = student_model, train_dataset = train_cache, eval_dataset = val_cache,
-            #                                  data_collator = DistillationCollator(student_tokenizer, args.max_length),
-            #                                  callbacks = callback_args_DIS, args = training_args_DIS
-            #                                  alpha = args.alpha, temperature = args.temperature
-            #                                  )
 
             print(f"DIS Setup done - Starting Distillation student model {idx+1} \n")
-            #DIS_Trainer.train()
+            DIS_Trainer.train()
             print("Distillation done.")
             
-            #DIS_Trainer.save_model(BEST_STUDENT_PATH)
+            DIS_Trainer.save_model(BEST_STUDENT_PATH)
             print(f"Distillation Student model {idx+1} saved.")
-
-
-
-
-
-        teacher_cache = 1 # ?
 
 
     if args.do_STUDENT_TESTS:
@@ -344,7 +367,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print("################################")
         print("\n\n")
 
-        jigsaw_data_set = jsonDataset.jigsawDataset(JIGSAW_DATASET_TEST_PATH)
+        #jigsaw_data_set = jsonDataset.jigsawDataset(JIGSAW_DATASET_TEST_PATH)
             
 
         """#ONLY FOR TESTING LATER ? 
@@ -404,7 +427,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 # Save results from training, validation and testing for all models in a structured way (e.g., CSV, JSON, or a database) for later analysis and comparison.
 # 
 # DO MORE STUDENT MODELS, DIFFERENT ARCHITECTURES, HYPERPARAMETERS, ETC.
-# DO PHASE 3.5: STUDENT MODEL FINE-TUNING ??
 # DO PHASE 4: TESTING MODELS
 # - TEST THE FINAL TEACHER ON JIGSAW TEST SET
 # - TEST EVERY STUDENT ON THE JIGSAW TEST SET
