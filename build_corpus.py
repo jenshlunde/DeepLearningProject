@@ -1,3 +1,40 @@
+"""
+build_corpus.py
+
+Reconstructs a corpus from the dataset variants (Original, Detoxed, Detoxed+Antispam) and saves it as a single JSON lines file.
+
+FOLDER LAYOUT EXPECTED
+-----------------------
+    <root>/
+        Original data/
+            [7812378231].txt
+            [7812378231] [part 2].txt   (multi-part files are fine)
+            stats.json
+        Detoxed data/
+            ...
+            stats.json
+        Detoxed and antispam data/
+            ...
+            stats.json
+
+
+OUTPUT
+------
+One JSONL file with each line like:
+    {"channel_id": "775774467321233509", "messages": ["User: text", ...]}
+
+
+USAGE
+-----
+    python3 build_corpus.py \\
+        --original "Datafolder/Original data" \\
+        --detoxed "Datafolder/Detoxed data" \\
+        --detox-antispam "Datafolder/Detoxed and antispam data" \\
+        --output corpus_spam_removed.jsonl
+
+Add --limit-channels N to do a quick test run on just the first N channels.
+"""
+
 import argparse
 import json
 import random
