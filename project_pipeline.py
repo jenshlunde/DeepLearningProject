@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--epochs-da", type=int, default=100)
     parser.add_argument("--epochs-tl", type=int, default=100)
-    parser.add_argument("--epochs-distill", type=int, default=100)
+    parser.add_argument("--epochs-dis", type=int, default=100)
     parser.add_argument("--batch-size-da", type=int, default=8)             #DA usually has larger datasets, so smaller batch size to fit in memory
     parser.add_argument("--batch-size-tl", type=int, default=16)
     parser.add_argument("--batch-size-dis", type=int, default=64)           #Student models are smaller, so more memory available for larger batch size
@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--do-DA", action="store_true", default=False)
     parser.add_argument("--do-TL", action="store_true", default=False)
     parser.add_argument("--do-DIS", action="store_true", default=False)
-    parser.add_argument("--do-STUDENT_TESTS", action="store_true", default=False)    
+    parser.add_argument("--do-MET", action="store_true", default=False)    
     parser.add_argument("--test-run", action="store_true", default=False)
     parser.add_argument("--full-run", action="store_true", default=False)
     return parser
@@ -103,13 +103,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     DA_MODEL_PATH = BEST_DA_TEACHER_PATH / "MODEL"
     TL_MODEL_PATH = BEST_TL_TEACHER_PATH / "MODEL"
     CACHE_LOGITS_PATH = output_path / "logits_cache"
+    TOKENIZER_TEACHER_PATH = BEST_TL_TEACHER_PATH / "TOKENIZER"
+    TOKENIZER_STUDENT_PATH = BEST_STUDENTS_PATH / "TOKENIZER"
 
     if args.full_run:
         print("### RUNNING FULL TRAINING PIPELINE ###")
         args.do_DA = True
         args.do_TL = True
         args.do_DIS = True
-        args.do_STUDENT_TESTS = True
+        args.do_MET = True
     if args.test_run:   
         print("### RUNNING TEST - EPOCHS AND DATALENGTHS REDUCED ###")
         #SHORT DATASETS FOR TESTS
@@ -124,16 +126,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         args.do_DA = True
         args.do_TL = True
         args.do_DIS = True
-        args.do_STUDENT_TESTS = True
+        args.do_MET = True
     else:           
-        JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_balanced_samples.jsonl")                                            
-        JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")        
-    JIGSAW_DATASET_TEST_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test.jsonl")
+        JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_short_100.jsonl")                                                    
+        #JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_balanced_samples.jsonl")                                            
+        JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train_short.jsonl")
+        #JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")        
+    JIGSAW_DATASET_TEST_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test_short.jsonl")
     
     ## Teacher model(s)
     TEACHER_BASE = "answerdotai/ModernBERT-base"
-    teacher_tokenizer = None
+    STUDENT_BASE = "bert-base-uncased"
     teacher_model = None
+    student_models = []
+    teacher_tokenizer = None
+    student_tokenizer = None
     jigsaw_data_set = None
 
     print("General Setup done")
@@ -219,8 +226,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print("jigsaw_train data set initialized, length:", len(jigsaw_train))
         print("jigsaw_val data set initialized, length:", len(jigsaw_val))
 
-        if teacher_tokenizer is None:
-            teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE) #If not initilized in DA phase, initialize here
+        if teacher_tokenizer is None:   #If not initilized in DA phase, initialize here
+            if TOKENIZER_TEACHER_PATH.exists():
+                teacher_tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_TEACHER_PATH)   #If a saved version exists, load that one
+            else:
+                teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)     #Otherwise, load the base version of the teacher model tokenizer
 
         jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer)
             
@@ -274,9 +284,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         modelFunctions.freeze_layers(teacher_model, verbose=True)
 
         #REDUCE TOKENIZER???
-        if teacher_tokenizer is None:
-            teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE) 
-        #THIS SHOULD BE A SMALLER TOKENIZER THAN THE TEACHER (CUSTOM?), BUT FOR NOW USE SAME AS TEACHER
+        if teacher_tokenizer is None:   #If not initilized in DA phase, initialize here
+            if TOKENIZER_TEACHER_PATH.exists():
+                teacher_tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_TEACHER_PATH)   #If a saved version exists, load that one
+            else:
+                teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)             #Otherwise, load the base version of the teacher model tokenizer
+        
+        #THIS SHOULD BE A SMALLER TOKENIZER THAN THE STUDENT_BASE?, BUT FOR NOW USE SAME AS TEACHER
         student_tokenizer = AutoTokenizer.from_pretrained(STUDENT_BASE)                            ##?? should look more into tokenizers
 
         #if not intialized in prior phases, initialize here
@@ -290,6 +304,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer)
         jigsaw_train_cache = modelFunctions.cache_logits(teacher_model, jigsaw_train, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "train_logits_cache", batch_size=args.batch_size_dis, device=device, seed=args.seed)
         jigsaw_val_cache = modelFunctions.cache_logits(teacher_model, jigsaw_val, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "val_logits_cache", batch_size=args.batch_size_dis, device=device, seed=args.seed)
+        print("Logits caching done for jigsaw dataset.")
 
         jef1056_dataset = jsonDataset.jef1056dataset(JEF_1056_DATASET_PATH)
         jef_train_size = int(0.9 * len(jef1056_dataset))
@@ -305,42 +320,42 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                                                     cache_path=CACHE_LOGITS_PATH / "jef_val_logits_cache",
                                                     batch_size=args.batch_size_dis, device=device, seed=args.seed,
                                                     )                
+        print("Logits caching done for jef1056 dataset.")
 
         ### Create dual dataset for distillation - outside the loop to avoid reloading the caches for each student model and give each student the same data 
         dual_train = jsonDataset.DualDataset(jef_train_cache, jigsaw_train_cache)
         dual_val = jsonDataset.DualDataset(jef_val_cache, jigsaw_val_cache)
+        print("Dual dataset for distillation created.")
 
         ## Student model(s)
-        STUDENT_BASE = "bert-base-uncased"
         student_model_1 = AutoModelForSequenceClassification.from_pretrained(STUDENT_BASE, num_labels=6, problem_type="multi_label_classification")
-        modelFunctions.freeze_layers(student_model_1, embedding_layers=True, keep_last=1, verbose=True) #To lighten during testing
+        modelFunctions.freeze_layers(student_model_1, freeze_embeddings=True, keep_last=1, verbose=True) #To lighten during testing
         student_model_2 = AutoModelForSequenceClassification.from_pretrained(STUDENT_BASE, num_labels=6, problem_type="multi_label_classification")
-        modelFunctions.freeze_layers(student_model_2, embedding_layers=True, keep_last=1, verbose=True) #To lighten during testing
-
+        modelFunctions.freeze_layers(student_model_2, freeze_embeddings=True, keep_last=1, verbose=True) #To lighten during testing
         student_models = [student_model_1, student_model_2]
-
-        training_args_DIS = TrainingArguments(
-            output_dir=BEST_STUDENT_PATH,                       #Where model predictions and checkpoints will be written
-            per_device_train_batch_size=args.batch_size_dis,    #Default = 8
-            num_train_epochs=args.epochs_dis,                   #Default = 3
-            learning_rate=args.learning_rate_dis,               #Default = 5e-5
-            dataloader_num_workers=args.num_workers_dis,        #Default = 0
-            dataloader_persistent_workers=True,                 #Default = False
-            load_best_model_at_end=True,                        #Default = False
-            eval_strategy="epoch",
-            save_strategy="epoch",
-            metric_for_best_model="eval_loss",
-            greater_is_better=False,
-            save_total_limit=2,
-            remove_unused_columns=False,
-            )
-        callback_args_DIS = [EarlyStoppingCallback(early_stopping_patience=args.patience_dis)]
+        print(f"{len(student_models)} student models initialized for distillation.")
             
         for idx, student_model in enumerate(student_models):
-
             BEST_STUDENT_PATH = BEST_STUDENTS_PATH / f"student_{idx+1}"
             BEST_STUDENT_PATH.mkdir(parents=True, exist_ok=True)
 
+            training_args_DIS = TrainingArguments(
+                output_dir=BEST_STUDENT_PATH,                       #Where model predictions and checkpoints will be written
+                per_device_train_batch_size=args.batch_size_dis,    #Default = 8
+                num_train_epochs=args.epochs_dis,                   #Default = 3
+                learning_rate=args.learning_rate_dis,               #Default = 5e-5
+                dataloader_num_workers=args.num_workers_dis,        #Default = 0
+                dataloader_persistent_workers=True,                 #Default = False
+                load_best_model_at_end=True,                        #Default = False
+                eval_strategy="epoch",
+                save_strategy="epoch",
+                metric_for_best_model="eval_loss",
+                greater_is_better=False,
+                save_total_limit=2,
+                remove_unused_columns=False,
+                )
+            callback_args_DIS = [EarlyStoppingCallback(early_stopping_patience=args.patience_dis)]
+            
             DIS_Trainer = modelFunctions.DualDistillationTrainer(
                 model=student_model,
                 train_dataset=dual_train,
@@ -358,68 +373,121 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             
             DIS_Trainer.save_model(BEST_STUDENT_PATH)
             print(f"Distillation Student model {idx+1} saved.")
+    
+        student_tokenizer.save_pretrained(TOKENIZER_STUDENT_PATH)
+        print(f"Student tokenizer saved.")
 
-
-    if args.do_STUDENT_TESTS:
+    if args.do_MET:
         print("\n\n")
         print("################################")
         print("### PHASE 4 : TESTING MODELS ###")
         print("################################")
         print("\n\n")
 
-        #jigsaw_data_set = jsonDataset.jigsawDataset(JIGSAW_DATASET_TEST_PATH)
+        #Initialize teacher model and tokenizers if not already done in prior phases
+        if teacher_model is None:
+            if not TL_MODEL_PATH.exists():
+                raise FileNotFoundError(f"Teacher checkpoint not found: {TL_MODEL_PATH}. Run earlier phases first.")
+            teacher_model = AutoModelForSequenceClassification.from_pretrained(TL_MODEL_PATH, num_labels=6, problem_type="multi_label_classification")
+
+        if teacher_tokenizer is None:   #If not initilized in DA phase, initialize here
+            tokenizer_path = BEST_TL_TEACHER_PATH / "TOKENIZER"
+            if tokenizer_path.exists():
+                teacher_tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)   #If a saved version exists, load that one
+            else:
+                teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)     #Otherwise, load the base version of the teacher model tokenizer
+
+
+        ### Load evaluation dataset                
+        evaluation_dataset = jsonDataset.jigsawDataset(JIGSAW_DATASET_TEST_PATH)
+        label_names = evaluation_dataset.class_names
+
+        #EVAL TEACHER MODEL
+        evaluation_teacher_collator = jsonDataset.SupervisedCollator(teacher_tokenizer) 
+        evaluation_teacher_args = TrainingArguments(
+            output_dir=BEST_TL_TEACHER_PATH / "evaluation",
+            per_device_eval_batch_size=args.batch_size_tl,
+            dataloader_num_workers=int(args.num_workers_tl),
+            remove_unused_columns=False,
+            report_to=[],
+        )
+        teacher_evaluator = Trainer(
+            model=teacher_model,
+            args=evaluation_teacher_args,
+            eval_dataset=evaluation_dataset,
+            data_collator=evaluation_teacher_collator,
+            compute_metrics=modelFunctions.compute_multilabel_metrics,
+        )
+        teacher_metrics = teacher_evaluator.evaluate(metric_key_prefix="teacher")
+        teacher_benchmark = modelFunctions.evaluate_multilabel_model(
+            teacher_model,
+            evaluation_dataset,
+            evaluation_teacher_collator,
+            device=device,
+            batch_size=args.batch_size_tl,
+            num_workers=int(args.num_workers_tl),
+            label_names=label_names,
+            model_path=TL_MODEL_PATH,
+        )
+        print("\nTeacher metrics:")
+        print(teacher_metrics)
+        print("Teacher end-to-end benchmark:")
+        print(teacher_benchmark["benchmark"])
+
+
+
+        #EVAL STUDENT MODELS
+        if student_tokenizer is None:   #If not initilized in DA phase, initialize here
+            if TOKENIZER_STUDENT_PATH.exists():
+                student_tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_STUDENT_PATH)   #If a saved version exists, load that one
+            else:
+                student_tokenizer = AutoTokenizer.from_pretrained(STUDENT_BASE)     #Otherwise, load the base version of the teacher model tokenizer
+
+        student_collator = jsonDataset.SupervisedCollator(student_tokenizer)
+
+        #Get all student checkpoint paths
+        student_checkpoint_paths = sorted(path for path in BEST_STUDENTS_PATH.glob("student_*") if path.is_dir()) 
+
+        # Evaluate each student model
+        for student_index in range(len(student_checkpoint_paths)):
             
+            student_path = student_checkpoint_paths[student_index]      #Path for current student          
+            if student_index < len(student_models):                     #If student is already loaded use them
+                student_model = student_models[student_index]
+            else:                                                       #Else load  
+                student_model = AutoModelForSequenceClassification.from_pretrained(student_path, num_labels=6, problem_type="multi_label_classification")
 
-        """#ONLY FOR TESTING LATER ? 
-        
-        #jigsaw_test = jsonDataset.jigsawDataset("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test_short.jsonl")
-        #print("jigsaw_test data set initialized, length:", len(jigsaw_test))
-
-        jigsaw_test_loader = torch.utils.data.DataLoader(jigsaw_test, batch_size=jigsaw_batch_size, shuffle=False, 
-                                                        num_workers=jigsaw_workers, persistent_workers=True, collate_fn=jigsaw_collator,
-                                                        )
-
-         
-        ## Test teacher model on labeled data
-        ## Test student model(s) on labeled data
-
-
-        timing_rows = []
-
-        for phase, stages in {
-            "DA": {
-                "epochs": time_stamps_DA_epochs,
-                "train": time_stamps_DA_train,
-                "validation": time_stamps_DA_val,
-            },
-            "TL": {
-                "epochs": time_stamps_TL_epochs,
-                "train": time_stamps_TL_train,
-                "validation": time_stamps_TL_val,
-            },
-            "DIS": {
-                "epochs": time_stamps_DIS_epochs,
-                "train": time_stamps_DIS_train,
-                "validation": time_stamps_DIS_val,
-            },
-        }.items():
-            for stage, durations in stages.items():
-                for epoch, duration in enumerate(durations, start=1):
-                    timing_rows.append({
-                        "phase": phase,
-                        "epoch": epoch,
-                        "stage": stage,
-                        "duration_seconds": duration,
-                    })
-
-        with open("time_stamps.csv", "w", newline="") as filehandle:
-            writer = csv.DictWriter(
-                filehandle,
-                fieldnames=["phase", "epoch", "stage", "duration_seconds"],
+            student_evaluation_args = TrainingArguments(        
+                output_dir=student_path / "evaluation",
+                per_device_eval_batch_size=args.batch_size_dis,
+                dataloader_num_workers=int(args.num_workers_dis),
+                remove_unused_columns=False,
+                report_to=[],
             )
-            writer.writeheader()
-            writer.writerows(timing_rows)
-        """
+            student_evaluator = Trainer(
+                model=student_model,
+                args=student_evaluation_args,
+                eval_dataset=evaluation_dataset,
+                data_collator=student_collator,
+                compute_metrics=modelFunctions.compute_multilabel_metrics,
+            )
+
+            student_metrics = student_evaluator.evaluate(metric_key_prefix=f"student_{student_index + 1}")
+            
+            student_benchmark = modelFunctions.evaluate_multilabel_model(
+                student_model,
+                evaluation_dataset,
+                student_collator,
+                device=device,
+                batch_size=args.batch_size_dis,
+                num_workers=int(args.num_workers_dis),
+                label_names=label_names,
+                model_path=student_path,
+            )
+            print(f"\nStudent {student_index + 1} metrics:")
+            print(student_metrics)
+            print(f"Student {student_index + 1} end-to-end benchmark:")
+            print(student_benchmark["benchmark"])
 
 
 #### TODO: 

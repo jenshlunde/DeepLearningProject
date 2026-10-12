@@ -1,14 +1,90 @@
 from collections.abc import Mapping
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as nnF
 import time
+import warnings
 from pathlib import Path
 from torch.utils.data import Dataset
 from transformers import Trainer
 
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"`torch\.jit\.script` is deprecated.*",
+        category=FutureWarning,
+    )
+    from torcheval.metrics.functional import (
+        binary_f1_score,
+        binary_precision,
+        binary_recall,
+        multilabel_accuracy,
+    )
+
 def eval_sigmoid_05(logits):
     return torch.sigmoid(logits) > 0.5
+
+
+def compute_multilabel_metrics(prediction):
+    """Metrics callback for Hugging Face Trainer.evaluate()."""
+    logits = prediction.predictions
+    labels = np.asarray(prediction.label_ids).astype(bool)
+    if isinstance(logits, tuple):
+        logits = logits[0]
+
+    predicted_tensor = torch.from_numpy(
+        1 / (1 + np.exp(-np.asarray(logits)))
+    )
+    labels_tensor = torch.from_numpy(labels)
+    f1 = torch.stack([
+        binary_f1_score(predicted_tensor[:, index], labels_tensor[:, index])
+        for index in range(labels_tensor.shape[1])
+    ])
+    precision = torch.stack([
+        binary_precision(predicted_tensor[:, index], labels_tensor[:, index])
+        for index in range(labels_tensor.shape[1])
+    ])
+    recall = torch.stack([
+        binary_recall(predicted_tensor[:, index], labels_tensor[:, index])
+        for index in range(labels_tensor.shape[1])
+    ])
+    label_names = (
+        "toxic", "severe_toxic", "obscene",
+        "threat", "insult", "identity_hate",
+    )
+
+    metrics = {
+        "subset_accuracy": float(multilabel_accuracy(
+            predicted_tensor, labels_tensor, criteria="exact_match"
+        )),
+        "hamming_accuracy": float(multilabel_accuracy(
+            predicted_tensor, labels_tensor, criteria="hamming"
+        )),
+        "macro_f1": float(f1.mean()),
+        "micro_precision": float(binary_precision(
+            predicted_tensor.flatten(), labels_tensor.flatten()
+        )),
+        "micro_recall": float(binary_recall(
+            predicted_tensor.flatten(), labels_tensor.flatten()
+        )),
+        "micro_f1": float(binary_f1_score(
+            predicted_tensor.flatten(), labels_tensor.flatten()
+        )),
+    }
+    metrics.update({
+        f"{name}_precision": float(precision[index])
+        for index, name in enumerate(label_names)
+    })
+    metrics.update({
+        f"{name}_recall": float(recall[index])
+        for index, name in enumerate(label_names)
+    })
+    metrics.update({
+        f"{name}_f1": float(f1[index])
+        for index, name in enumerate(label_names)
+    })
+    return metrics
 
 
 def train_model_unsupervised(model, optimizer, dataloader, device, loss_fn=None, prints=0):
@@ -239,6 +315,163 @@ def test_model_supervised(model, loss_fn, dataloader, device, eval_func = eval_s
 
     return test_avg_loss, test_avg_accuracy_total, test_avg_accuracy_individual
 
+
+def _process_rss_bytes():
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss
+    except ImportError:
+        if hasattr(__import__("ctypes"), "windll"):
+            import ctypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("cb", ctypes.c_ulong),
+                    ("PageFaultCount", ctypes.c_ulong),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(counters)
+            process = ctypes.windll.kernel32.GetCurrentProcess()
+            success = ctypes.windll.psapi.GetProcessMemoryInfo(
+                process, ctypes.byref(counters), counters.cb
+            )
+            return counters.WorkingSetSize if success else None
+        return None
+
+
+def _directory_size_bytes(path):
+    if path is None or not Path(path).exists():
+        return None
+    return sum(file.stat().st_size for file in Path(path).rglob("*") if file.is_file())
+
+def synchronize(device: torch.device):
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+def evaluate_multilabel_model(model: torch.nn.Module, dataset: Dataset, collator, device: torch.device, 
+                              batch_size: int = 8, num_workers: int = 0, threshold: float = 0.5, 
+                              label_names = None, model_path = None, warmup_batches: int = 2, max_batches = None):
+  
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, 
+                                             num_workers=num_workers, collate_fn=collator)
+    model.to(device)    
+    model.eval()        #Freeze model parameters and set to eval mode
+
+    if device.type == "cuda":       #Clear GPU memory cache and reset peak memory stats
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(device)
+
+    #Bookkeeping
+    logits_all = []
+    labels_all = []
+    total_loss = 0.0
+    total_samples = 0
+    timed_batches = 0
+    timed_samples = 0
+    timed_seconds_w_data = 0.0
+    timed_seconds_wo_data = 0.0
+    peak_rss = _process_rss_bytes()
+    data_iterator = iter(dataloader)
+
+    with torch.no_grad():
+        batch_index = 0
+        while max_batches is None or batch_index < max_batches: #While more batches
+
+            start_t = time.perf_counter()                         #Timer here to also include data loading time
+
+            try:
+                batch = next(data_iterator)
+            except StopIteration:
+                break
+
+            labels = batch.pop("labels").to(device).float()
+            model_inputs = {key: value.to(device) for key, value in batch.items()}
+
+            model_t = time.perf_counter() - start_t
+            synchronize(device)
+            logits = model(**model_inputs).logits
+            synchronize(device)
+            elapsed_t_w_data  = time.perf_counter() - start_t
+            elapsed_t_wo_data = time.perf_counter() - model_t
+
+            logits_all.append(logits.detach().cpu())
+            labels_all.append(labels.detach().cpu())
+            loss = nnF.binary_cross_entropy_with_logits(logits, labels)
+            total_loss += loss.item() * labels.size(0)
+            total_samples += labels.size(0)
+
+            if batch_index >= warmup_batches:
+                timed_batches += 1
+                timed_samples += labels.size(0)
+                timed_seconds_w_data += elapsed_t_w_data
+                timed_seconds_wo_data += elapsed_t_wo_data
+            current_rss = _process_rss_bytes()
+            if current_rss is not None:
+                peak_rss = max(peak_rss or current_rss, current_rss)
+            batch_index += 1
+
+    if total_samples == 0:
+        raise ValueError("Cannot evaluate a model on an empty dataset.")
+
+    logits = torch.cat(logits_all)
+    labels = torch.cat(labels_all).bool()
+    predictions = torch.sigmoid(logits)
+    names = label_names or [f"label_{index}" for index in range(labels.size(1))]
+    per_label = {}
+    for index, name in enumerate(names):
+        per_label[name] = {
+            "precision": float(binary_precision(predictions[:, index], labels[:, index], threshold=threshold)),
+            "recall": float(binary_recall(predictions[:, index], labels[:, index], threshold=threshold)),
+            "f1": float(binary_f1_score(predictions[:, index], labels[:, index], threshold=threshold)),
+        }
+
+    return {
+        "loss": total_loss / total_samples,
+        "subset_accuracy": float(multilabel_accuracy(predictions, labels, threshold=threshold, criteria="exact_match")),
+        "hamming_accuracy": float(multilabel_accuracy(predictions, labels, threshold=threshold, criteria="hamming")),
+        "macro_f1": float(torch.tensor([item["f1"] for item in per_label.values()]).mean()),
+        "micro_precision": float(binary_precision(predictions.flatten(), labels.flatten(), threshold=threshold)),
+        "micro_recall": float(binary_recall(predictions.flatten(), labels.flatten(), threshold=threshold)),
+        "micro_f1": float(binary_f1_score(predictions.flatten(), labels.flatten(), threshold=threshold)),
+        "per_label": per_label,
+        "benchmark": {
+            "batch_size": batch_size,
+            "warmup_batches": min(warmup_batches, batch_index),
+            "timed_batches": timed_batches,
+            "latency_ms_per_batch_w_dataload": (timed_seconds_w_data / timed_batches * 1000 if timed_batches else None),
+            "latency_ms_per_sample_w_dataload": (timed_seconds_w_data / timed_samples * 1000 if timed_samples else None),
+            "throughput_samples_per_second_w_dataload": (timed_samples / timed_seconds_w_data if timed_seconds_w_data else None),
+            "latency_ms_per_batch_wo_dataload": (timed_seconds_wo_data / timed_batches * 1000 if timed_batches else None),
+            "latency_ms_per_sample_wo_dataload": (timed_seconds_wo_data / timed_samples * 1000 if timed_samples else None),
+            "throughput_samples_per_second_wo_dataload": (timed_samples / timed_seconds_wo_data if timed_seconds_wo_data else None),
+            "peak_cpu_rss_mb": peak_rss / (1024 ** 2) if peak_rss is not None else None,
+            "peak_cuda_allocated_mb": (torch.cuda.max_memory_allocated(device) / (1024 ** 2) if device.type == "cuda" else None),
+            "peak_cuda_reserved_mb": (torch.cuda.max_memory_reserved(device) / (1024 ** 2) if device.type == "cuda" else None),
+            "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
+            "trainable_parameter_count": sum(
+                parameter.numel()
+                for parameter in model.parameters()
+                if parameter.requires_grad
+            ),
+            "checkpoint_size_mb": (
+                checkpoint_size / (1024 ** 2)
+                if (checkpoint_size := _directory_size_bytes(model_path)) is not None
+                else None
+            ),
+            "tokenization_included": True,
+            "num_workers": num_workers,
+        },
+    }
+
 def train_model_distill(student_model, teacher_model, optimizer, dataloader, device, alpha, temperature, eval_func=eval_sigmoid_05, prints=0):
     student_model.to(device)
     student_model.train()
@@ -339,18 +572,32 @@ def validate_model_distillation(student_model, teacher_model, dataloader, device
     return avg_loss, avg_accuracy_total, avg_accuracy_individual
 
 def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_last: int = None, verbose: bool = False, return_trainable: bool = False):
-    backbone = getattr(model, "model", model)
+    
+    backbone = getattr(model, "base_model", None)           # Hugging Face models use ``base_model``
+    if backbone is None:
+        backbone = getattr(model, "model", model)           # some custom models use ``model``
+
     embeddings = getattr(backbone, "embeddings", None)
 
-    if freeze_embeddings:       
+    if freeze_embeddings:
         if embeddings is not None:
             for parameter in embeddings.parameters():
                 parameter.requires_grad = False
-        
-    layers = getattr(backbone, "layers", None)
-    
-    if layers is not None:
-        for layer in list(layers)[:-keep_last]:     #freeze all layers except the last 'keep_last' layers 
+
+    if keep_last is not None:
+        if keep_last < 0:
+            raise ValueError("keep_last must be non-negative.")
+
+        layers = getattr(backbone, "layers", None)
+        if layers is None:
+            encoder = getattr(backbone, "encoder", None)
+            layers = getattr(encoder, "layer", None)
+
+        if layers is None: #Safety check
+            raise ValueError("The model does not expose transformer layers through 'layers' or 'encoder.layer'.")
+
+        for layer in list(layers)[:-keep_last or None]:
+            # Freeze all layers except the last ``keep_last`` layers.
             for parameter in layer.parameters():
                 parameter.requires_grad = False
 
@@ -379,7 +626,7 @@ class CachedLogitsDataset(Dataset):
     def __getitem__(self, idx):
         return {
             "text": self.texts[idx],
-            "labels": self.labels[idx],
+            "labels": self.labels[idx] if self.labels is not None else None,
             "logits": self.logits[idx]
         }
 
