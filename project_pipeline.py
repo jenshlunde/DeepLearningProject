@@ -12,6 +12,7 @@ from transformers import (AutoTokenizer, AutoModelForMaskedLM, AutoModelForSeque
 from torch.utils.data import random_split
 
 import csv                                         
+import json
 
 import jsonDataset                                                  #Homegrown dataset class for reading json files
 import modelFunctions                                               #Homegrown functions for models: train, val, test, ...
@@ -488,6 +489,19 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print(student_metrics)
             print(f"Student {student_index + 1} end-to-end benchmark:")
             print(student_benchmark["benchmark"])
+
+            evaluation_path = student_path / "evaluation"
+            evaluation_path.mkdir(parents=True, exist_ok=True)
+            evaluation_report = {
+                "student_index": student_index + 1,
+                "student_metrics": student_metrics,
+                "student_benchmark": student_benchmark,
+            }
+            with (evaluation_path / "evaluation_results.json").open(
+                "w", encoding="utf-8"
+            ) as evaluation_file:
+                json.dump(evaluation_report, evaluation_file, indent=2)
+            print(f"Student evaluation saved to {evaluation_path / 'evaluation_results.json'}")
 
 
 #### TODO: 
