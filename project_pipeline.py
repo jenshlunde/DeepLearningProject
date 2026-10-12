@@ -497,9 +497,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 "student_metrics": student_metrics,
                 "student_benchmark": student_benchmark,
             }
-            with (evaluation_path / "evaluation_results.json").open(
-                "w", encoding="utf-8"
-            ) as evaluation_file:
+            with (evaluation_path / "evaluation_results.json").open("w", encoding="utf-8") as evaluation_file:
                 json.dump(evaluation_report, evaluation_file, indent=2)
             print(f"Student evaluation saved to {evaluation_path / 'evaluation_results.json'}")
 
