@@ -10,7 +10,9 @@ import torch
 from transformers import (AutoTokenizer, AutoModelForMaskedLM, AutoModelForSequenceClassification,
                           EarlyStoppingCallback, Trainer, TrainingArguments)
 from torch.utils.data import random_split
+from safetensors.torch import load_file
 
+import itertools
 import csv                                         
 import json
 import time                                                         
@@ -27,13 +29,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size-da", type=int, default=8)             #DA usually has larger datasets, so smaller batch size to fit in memory
     parser.add_argument("--batch-size-tl", type=int, default=16)
     parser.add_argument("--batch-size-dis", type=int, default=64)           #Student models are smaller, so more memory available for larger batch size
-    parser.add_argument("--num-workers-da", type=float, default=4)
-    parser.add_argument("--num-workers-tl", type=float, default=4)
-    parser.add_argument("--num-workers-dis", type=float, default=4)
+    parser.add_argument("--num-workers-da", type=int, default=4)
+    parser.add_argument("--num-workers-tl", type=int, default=4)
+    parser.add_argument("--num-workers-dis", type=int, default=4)
     parser.add_argument("--max-length-da", type=int, default=256)
     parser.add_argument("--learning-rate-da", type=float, default=5e-5)
     parser.add_argument("--learning-rate-tl", type=float, default=1e-5)
-    parser.add_argument("--learning-rate-dis", type=float, default=5e-5)
+    parser.add_argument("--learning-rate-dis", type=float, default=5e-4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=.5)
     parser.add_argument("--temperature", type=float, default=2.)
@@ -104,9 +106,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     DA_MODEL_PATH = BEST_DA_TEACHER_PATH / "MODEL"
     TL_MODEL_PATH = BEST_TL_TEACHER_PATH / "MODEL"
     CACHE_LOGITS_PATH = output_path / "logits_cache"
-    TOKENIZER_TEACHER_PATH = BEST_TL_TEACHER_PATH / "TOKENIZER"
-    TOKENIZER_STUDENT_PATH = BEST_STUDENTS_PATH / "TOKENIZER"
+    TOKENIZER_PATH = output_path / "tokenizer"
+    TOKENIZER_TEACHER_PATH = TOKENIZER_PATH / "TEACHER"
+    TOKENIZER_STUDENT_PATH = TOKENIZER_PATH / "STUDENT"
+    STUDENT_NAMES_PATH = output_path / "student_names.json"
 
+    STUDENT_VOCAB_SIZE = 16_000     #Correct size??
+    
     if args.full_run:
         print("### RUNNING FULL TRAINING PIPELINE ###")
         args.do_DA = True
@@ -145,20 +151,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     print("General Setup done")
 
+
     if args.do_DA:
-        
-        # MLM models automatically uses CrossEntropyLoss with ignore_index=-100 for masked tokens, so no need to specify loss function here.
-        teacher_mlm = AutoModelForMaskedLM.from_pretrained(TEACHER_BASE)
-        print(f"Teacher model initialized: {TEACHER_BASE}")
-        teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)
-        print(f"Teacher tokenizer initialized: {TEACHER_BASE}")
-    
+
         print("\n\n")
         print("####################################################")
         print("### PHASE 1 : DOMAIN ADAPTATION OF TEACHER MODEL ###")
         print("####################################################")
         print("\n\n")
 
+        # MLM models automatically uses CrossEntropyLoss with ignore_index=-100 for masked tokens, so no need to specify loss function here.
+        teacher_mlm = AutoModelForMaskedLM.from_pretrained(TEACHER_BASE)
+        print(f"Teacher model initialized: {TEACHER_BASE}")
+        teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)
+        print(f"Teacher tokenizer initialized: {TEACHER_BASE}")
+    
         ### unlabeled dataloader ###
         data_loader_t0 = time.perf_counter()
         jef1056_dataset = jsonDataset.jef1056dataset(JEF_1056_DATASET_PATH)
@@ -270,28 +277,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 
     if args.do_DIS:
+
         print("\n\n")
         print("##########################################")
         print("### PHASE 3 : DISTILLING ONTO STUDENTS ###")
         print("##########################################")
         print("\n\n")
 
-        #If not initilized in prior phases, initialize here
-        if teacher_model is None:
-            teacher_model = AutoModelForSequenceClassification.from_pretrained(TL_MODEL_PATH, num_labels=6,problem_type="multi_label_classification")
-    
-        #Freeze all of the model   
-        modelFunctions.freeze_layers(teacher_model, verbose=True)
-
-        #REDUCE TOKENIZER???
         if teacher_tokenizer is None:   #If not initilized in DA phase, initialize here
             if TOKENIZER_TEACHER_PATH.exists():
                 teacher_tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_TEACHER_PATH)   #If a saved version exists, load that one
             else:
                 teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)             #Otherwise, load the base version of the teacher model tokenizer
-        
-        #THIS SHOULD BE A SMALLER TOKENIZER THAN THE STUDENT_BASE?, BUT FOR NOW USE SAME AS TEACHER
-        student_tokenizer = AutoTokenizer.from_pretrained(STUDENT_BASE)                            ##?? should look more into tokenizers
+
+        #If not initilized in prior phases, initialize here
+        if teacher_model is None:
+            teacher_model = AutoModelForSequenceClassification.from_pretrained(TL_MODEL_PATH, num_labels=6,problem_type="multi_label_classification")
+        #Freeze all of the model   
+        modelFunctions.freeze_layers(teacher_model, verbose=True)
 
         #if not intialized in prior phases, initialize here
         if jigsaw_data_set is None:
@@ -327,8 +330,28 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         dual_val = jsonDataset.DualDataset(jef_val_cache, jigsaw_val_cache)
         print("Dual dataset for distillation created.")
 
+        #Create custom tokenizser
+        if TOKENIZER_STUDENT_PATH.exists():                            
+            student_tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_STUDENT_PATH)
+        else:
+            base = AutoTokenizer.from_pretrained(STUDENT_BASE)           # reuse BERT's pipeline
+            student_tokenizer = base.train_new_from_iterator(modelFunctions.student_text_iterator(jef_train, jigsaw_train), vocab_size=STUDENT_VOCAB_SIZE)
+            student_tokenizer.model_max_length = args.max_length_da      
+            student_tokenizer.save_pretrained(TOKENIZER_STUDENT_PATH)    
+
+        #Sanity check for tokenizer
+        token_size = len(student_tokenizer)
+        print(f"Student vocab: {token_size}")
+        sample = [t for t, _ in itertools.islice(iter(jigsaw_train), 1000)]
+        avg = lambda tok: sum(len(x) for x in tok(sample)["input_ids"]) / len(sample)
+        print(f"avg tokens per Jigsaw comment: teacher {avg(teacher_tokenizer):.1f}, student {avg(student_tokenizer):.1f}")
+
+
         ### Student model(s) ###
-        embed_dim = 512  # Set the embedding dimension for student models - should be derived from something specific, but for now just set to 512
+        embed_dim_L = 258   # Set the embedding dimension for student models
+        embed_dim_M = 64    # should be derived from something specific
+        embed_dim_S = 16    # but for now this works
+
         token_size = student_tokenizer.vocab_size
 
         #   _L (Large) ~10% of teacher model parameters
@@ -336,59 +359,77 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         #   _S (Small) ~0.1% of teacher model parameters
 
         #MLP students
-        MLP_DeepNarrow_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[512, 512, 512, 512, 512, 512, 512, 512], name="MLP_DeepNarrow_L")
-        MLP_DeepNarrow_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[256, 256, 256, 256, 256, 256], name="MLP_DeepNarrow_M")
-        MLP_DeepNarrow_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[128, 128, 128, 128], name="MLP_DeepNarrow_S")
-        MLP_ShortWide_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[4096, 4096], name="MLP_ShortWide_L")
-        MLP_ShortWide_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[1024, 1024], name="MLP_ShortWide_M")
-        MLP_ShortWide_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[512], name="MLP_ShortWide_S")
-        MLP_Bottleneck_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[2048, 512, 2048], name="MLP_Bottleneck_L")
-        MLP_Bottleneck_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[512, 64, 512], name="MLP_Bottleneck_M")
-        MLP_Bottleneck_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[256, 32, 256], name="MLP_Bottleneck_S")
+        if args.test_run:
+            MLP_DeepNarrow_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_S, num_labels=6, layers_array=[128, 128, 128, 128], name="MLP_DeepNarrow_S")
+            MLP_ShortWide_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_S, num_labels=6, layers_array=[512], name="MLP_ShortWide_S")
+            MLP_Bottleneck_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_S, num_labels=6, layers_array=[256, 32, 256], name="MLP_Bottleneck_S")
+            Trans_DeepNarrow_S = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim_S, num_layers=4, d_model=32, dff=64, num_heads=2, num_labels=6, name="Trans_DeepNarrow_S")          #Odd number of num_heads gives error??
+            Trans_ShortWide_S = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim_S, num_layers=1, d_model=64, dff=128, num_heads=2, num_labels=6, name="Trans_ShortWide_S")           #Odd number of num_heads gives error??
 
-        #Transformer students
-        Trans_DeepNarrow_L = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=12, d_model=256, dff=512, num_heads=4, num_labels=6, name="Trans_DeepNarrow_L")      #Odd number of num_heads gives error??
-        Trans_DeepNarrow_M = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=6, d_model=128, dff=256, num_heads=2, num_labels=6, name="Trans_DeepNarrow_M")
-        Trans_DeepNarrow_S = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=4, d_model=32, dff=64, num_heads=2, num_labels=6, name="Trans_DeepNarrow_S")          #Odd number of num_heads gives error??
-        Trans_ShortWide_L = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=2, d_model=1024, dff=2048, num_heads=8, num_labels=6, name="Trans_ShortWide_L")
-        Trans_ShortWide_M = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=1, d_model=256, dff=512, num_heads=4, num_labels=6, name="Trans_ShortWide_M")
-        Trans_ShortWide_S = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=1, d_model=64, dff=128, num_heads=2, num_labels=6, name="Trans_ShortWide_S")
+            student_models = [MLP_DeepNarrow_S, MLP_ShortWide_S, MLP_Bottleneck_S, Trans_DeepNarrow_S, Trans_ShortWide_S]
         
-        d_models_L = [256, 64, 1024]
-        d_models_M = [128, 32, 128]
-        d_models_S = [32, 8, 32]
-        dffs_L = [512, 128, 512]
-        dffs_M = [256, 64, 256]
-        dffs_S = [64, 16, 64]
-        num_heads_L = [4, 4, 4]
-        num_heads_M = [2, 2, 2]
-        num_heads_S = [2, 2, 2]
-        Trans_Bottleneck_L = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim, d_model=d_models_L, dff=dffs_L, num_heads=num_heads_L, num_labels=6, name="Trans_Bottleneck_L")
-        Trans_Bottleneck_M = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim, d_model=d_models_M, dff=dffs_M, num_heads=num_heads_M, num_labels=6, name="Trans_Bottleneck_M")
-        Trans_Bottleneck_S = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim, d_model=d_models_S, dff=dffs_S, num_heads=num_heads_S, num_labels=6, name="Trans_Bottleneck_S")
+        if args.full_run:
+            MLP_DeepNarrow_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_L, num_labels=6, layers_array=[512, 512, 512, 512, 512, 512, 512, 512], name="MLP_DeepNarrow_L")
+            MLP_DeepNarrow_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_M, num_labels=6, layers_array=[256, 256, 256, 256, 256, 256], name="MLP_DeepNarrow_M")
+            MLP_DeepNarrow_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_S, num_labels=6, layers_array=[128, 128, 128, 128], name="MLP_DeepNarrow_S")
+            MLP_ShortWide_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_L, num_labels=6, layers_array=[4096, 4096], name="MLP_ShortWide_L")
+            MLP_ShortWide_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_M, num_labels=6, layers_array=[1024, 1024], name="MLP_ShortWide_M")
+            MLP_ShortWide_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_S, num_labels=6, layers_array=[512], name="MLP_ShortWide_S")
+            MLP_Bottleneck_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_L, num_labels=6, layers_array=[2048, 512, 2048], name="MLP_Bottleneck_L")
+            MLP_Bottleneck_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_M, num_labels=6, layers_array=[512, 64, 512], name="MLP_Bottleneck_M")
+            MLP_Bottleneck_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim_S, num_labels=6, layers_array=[256, 32, 256], name="MLP_Bottleneck_S")
 
-        student_models = [MLP_DeepNarrow_L,     MLP_DeepNarrow_M,       MLP_DeepNarrow_S, 
-                          MLP_ShortWide_L,      MLP_ShortWide_M,        MLP_ShortWide_S, 
-                          MLP_Bottleneck_L,     MLP_Bottleneck_M,       MLP_Bottleneck_S, 
-                          Trans_DeepNarrow_L,   Trans_DeepNarrow_M,     Trans_DeepNarrow_S, 
-                          Trans_ShortWide_L,    Trans_ShortWide_M,      Trans_ShortWide_S, 
-                          Trans_Bottleneck_L,   Trans_Bottleneck_M,     Trans_Bottleneck_S]
+            #Transformer students
+            Trans_DeepNarrow_L = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim_L, num_layers=12, d_model=256, dff=512, num_heads=4, num_labels=6, name="Trans_DeepNarrow_L")      
+            Trans_DeepNarrow_M = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim_M, num_layers=6, d_model=128, dff=256, num_heads=2, num_labels=6, name="Trans_DeepNarrow_M")
+            Trans_DeepNarrow_S = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim_S, num_layers=4, d_model=32, dff=64, num_heads=2, num_labels=6, name="Trans_DeepNarrow_S")          #Odd number of num_heads gives error??
+            Trans_ShortWide_L = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim_L, num_layers=2, d_model=1024, dff=2048, num_heads=8, num_labels=6, name="Trans_ShortWide_L")
+            Trans_ShortWide_M = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim_M, num_layers=1, d_model=256, dff=512, num_heads=4, num_labels=6, name="Trans_ShortWide_M")
+            Trans_ShortWide_S = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim_S, num_layers=1, d_model=64, dff=128, num_heads=2, num_labels=6, name="Trans_ShortWide_S")           #Odd number of num_heads gives error??
+            
+            d_models_L = [256, 64, 1024]
+            d_models_M = [128, 32, 128]
+            d_models_S = [32, 8, 32]
+            dffs_L = [512, 128, 512]
+            dffs_M = [256, 64, 256]
+            dffs_S = [64, 16, 64]
+            num_heads_L = [4, 4, 4]
+            num_heads_M = [2, 2, 2]
+            num_heads_S = [2, 2, 2]
+            Trans_Bottleneck_L = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim_L, d_model=d_models_L, dff=dffs_L, num_heads=num_heads_L, num_labels=6, name="Trans_Bottleneck_L")
+            Trans_Bottleneck_M = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim_M, d_model=d_models_M, dff=dffs_M, num_heads=num_heads_M, num_labels=6, name="Trans_Bottleneck_M")
+            Trans_Bottleneck_S = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim_S, d_model=d_models_S, dff=dffs_S, num_heads=num_heads_S, num_labels=6, name="Trans_Bottleneck_S")
+
+            student_models = [MLP_DeepNarrow_L,     MLP_DeepNarrow_M,       MLP_DeepNarrow_S, 
+                            MLP_ShortWide_L,      MLP_ShortWide_M,        MLP_ShortWide_S, 
+                            MLP_Bottleneck_L,     MLP_Bottleneck_M,       MLP_Bottleneck_S, 
+                            Trans_DeepNarrow_L,   Trans_DeepNarrow_M,     Trans_DeepNarrow_S, 
+                            Trans_ShortWide_L,    Trans_ShortWide_M,      Trans_ShortWide_S, 
+                            Trans_Bottleneck_L,   Trans_Bottleneck_M,     Trans_Bottleneck_S]
+
         
+        student_models_names = [model.name for model in student_models]
+        student_models_paths = [BEST_STUDENTS_PATH / model.name for model in student_models]
+
+        with open(STUDENT_NAMES_PATH, 'w') as f:    #Save student model names and paths to a JSON file for reference
+            json.dump({"names": student_models_names, "paths": [str(p) for p in student_models_paths]}, f)
+
         print(f"{len(student_models)} student models initialized for distillation")
             
         for idx, student_model in enumerate(student_models):
             model_name = student_model.name
-            BEST_STUDENT_PATH = BEST_STUDENTS_PATH / model_name
-            BEST_STUDENT_PATH.mkdir(parents=True, exist_ok=True)
+            CURRENT_BEST_STUDENT_PATH = student_models_paths[idx]
+            CURRENT_BEST_STUDENT_PATH.mkdir(parents=True, exist_ok=True)
 
             print(f"\n\nStarting distillation for student model {idx+1}: {model_name} \n")                      #print which student model is being distilled
             print(f"Student model {idx+1} parameters: {sum(p.numel() for p in student_model.parameters())}")    #short print of number of parameters in student model
             
             training_args_DIS = TrainingArguments(
-                output_dir=BEST_STUDENT_PATH,                       #Where model predictions and checkpoints will be written
+                output_dir=CURRENT_BEST_STUDENT_PATH,               #Where model predictions and checkpoints will be written
                 per_device_train_batch_size=args.batch_size_dis,    #Default = 8
                 num_train_epochs=args.epochs_dis,                   #Default = 3
                 learning_rate=args.learning_rate_dis,               #Default = 5e-5
+                warmup_steps=1000,                                  # LR ramps linearly over first 1000 steps
                 dataloader_num_workers=args.num_workers_dis,        #Default = 0
                 dataloader_persistent_workers=True,                 #Default = False
                 load_best_model_at_end=True,                        #Default = False
@@ -417,8 +458,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             DIS_Trainer.train()
             print(f"Distillation for student model {idx+1} done.")
             
-            DIS_Trainer.save_model(BEST_STUDENT_PATH)
+            DIS_Trainer.save_model(CURRENT_BEST_STUDENT_PATH)
             print(f"Distillation Student model {idx+1} saved.")
+            student_model.cpu()                                     #Move student model away from GPU to free GPU mem
     
         student_tokenizer.save_pretrained(TOKENIZER_STUDENT_PATH)
         print(f"Student tokenizer saved.")
@@ -434,9 +476,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if teacher_model is None:
             if not TL_MODEL_PATH.exists():
                 raise FileNotFoundError(f"Teacher checkpoint not found: {TL_MODEL_PATH}. Run earlier phases first.")
+            print(f"Loading teacher model from {TL_MODEL_PATH}")
             teacher_model = AutoModelForSequenceClassification.from_pretrained(TL_MODEL_PATH, num_labels=6, problem_type="multi_label_classification")
 
         if teacher_tokenizer is None:   #If not initilized in DA phase, initialize here
+            print(f"Loading teacher tokenizer...")
             tokenizer_path = BEST_TL_TEACHER_PATH / "TOKENIZER"
             if tokenizer_path.exists():
                 teacher_tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)   #If a saved version exists, load that one
@@ -449,6 +493,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         label_names = evaluation_dataset.class_names
 
         #EVAL TEACHER MODEL
+        print("\n\nEvaluating teacher model...")
         evaluation_teacher_collator = jsonDataset.SupervisedCollator(teacher_tokenizer) 
         evaluation_teacher_args = TrainingArguments(
             output_dir=BEST_TL_TEACHER_PATH / "evaluation",
@@ -492,21 +537,31 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
         student_collator = jsonDataset.SupervisedCollator(student_tokenizer)
 
-        #Get all student checkpoint paths
-        student_checkpoint_paths = sorted(path for path in BEST_STUDENTS_PATH.glob("student_*") if path.is_dir()) 
+        with open(STUDENT_NAMES_PATH, 'r') as f:    #Get student model names and paths from the JSON file for reference
+            student_info = json.load(f)
+            student_models_names = student_info["names"]
+            student_models_paths = [Path(p) for p in student_info["paths"]]
 
         # Evaluate each student model
-        for student_index in range(len(student_checkpoint_paths)):
-            
-            student_path = student_checkpoint_paths[student_index]      #Path for current student          
-            if student_index < len(student_models):                     #If student is already loaded use them
+        for student_index in range(len(student_models_paths)):
+
+            student_path = student_models_paths[student_index]                                          #Path for current student          
+            if student_index < len(student_models):                                                     #If student is already loaded use them
                 student_model = student_models[student_index]
-            else:                                                       #Else load  
-                student_model = AutoModelForSequenceClassification.from_pretrained(student_path, num_labels=6, problem_type="multi_label_classification")
+            else:               
+                weights_path = student_path / "model.safetensors"
+                if not weights_path.exists():
+                    raise FileNotFoundError(f"Student weights not found: {weights_path}")
+                student_model = modelSetups.create_student_model(student_models_names[student_index],vocab_size=len(student_tokenizer))
+                student_model.load_state_dict(load_file(str(weights_path), device="cpu"))
+                student_model.to(device)
+            
+            model_name = student_models_names[student_index]
+            print(f"\n\nEvaluating student model {student_index + 1}: {model_name}")
 
             student_evaluation_args = TrainingArguments(        
                 output_dir=student_path / "evaluation",
-                per_device_eval_batch_size=args.batch_size_dis,
+                per_device_eval_batch_size=1,                           #Batch size is set to 1 as that's how the model will be used in production
                 dataloader_num_workers=int(args.num_workers_dis),
                 remove_unused_columns=False,
                 report_to=[],
@@ -527,7 +582,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 evaluation_dataset,
                 student_collator,
                 device=device,
-                batch_size=args.batch_size_dis,
+                batch_size=1,                           #Batch size is set to 1 as that's how the model will be used in production,
                 num_workers=int(args.num_workers_dis),
                 label_names=label_names,
                 model_path=student_path,
@@ -544,10 +599,22 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 "student_metrics": student_metrics,
                 "student_benchmark": student_benchmark,
             }
+            
             with (evaluation_path / "evaluation_results.json").open("w", encoding="utf-8") as evaluation_file:
                 json.dump(evaluation_report, evaluation_file, indent=2)
             print(f"Student evaluation saved to {evaluation_path / 'evaluation_results.json'}")
+            
+            student_model.cpu()
 
 
 if __name__ == "__main__":
     main()
+
+
+
+### TODO:
+#
+# Add better cleaning of the CPU / GPU memory after each model is trained and evaluated
+# Add a phase for hyperparameter tuning of select students 
+# Clean / add code that filters the jigsaw dataset to exclude "Username:" and their actual names
+# Run the entire pipeline with a larger JEF1056 dataset on the ECE Cluster
