@@ -8,6 +8,8 @@ import warnings
 from pathlib import Path
 from torch.utils.data import Dataset
 from transformers import Trainer
+import itertools
+
 
 with warnings.catch_warnings():
     warnings.filterwarnings(
@@ -401,7 +403,7 @@ def evaluate_multilabel_model(model: torch.nn.Module, dataset: Dataset, collator
             logits = model(**model_inputs).logits
             synchronize(device)
             elapsed_t_w_data  = time.perf_counter() - start_t
-            elapsed_t_wo_data = time.perf_counter() - model_t
+            elapsed_t_wo_data = elapsed_t_w_data - model_t
 
             logits_all.append(logits.detach().cpu())
             labels_all.append(labels.detach().cpu())
@@ -571,7 +573,7 @@ def validate_model_distillation(student_model, teacher_model, dataloader, device
         )
     return avg_loss, avg_accuracy_total, avg_accuracy_individual
 
-def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_last: int = None, verbose: bool = False, return_trainable: bool = False):
+def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_last: int = 0, verbose: bool = False, return_trainable: bool = False):
     
     backbone = getattr(model, "base_model", None)           # Hugging Face models use ``base_model``
     if backbone is None:
@@ -587,7 +589,6 @@ def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_l
     if keep_last is not None:
         if keep_last < 0:
             raise ValueError("keep_last must be non-negative.")
-
         layers = getattr(backbone, "layers", None)
         if layers is None:
             encoder = getattr(backbone, "encoder", None)
@@ -600,6 +601,7 @@ def freeze_layers(model: torch.nn.Module, freeze_embeddings: bool = True, keep_l
             # Freeze all layers except the last ``keep_last`` layers.
             for parameter in layer.parameters():
                 parameter.requires_grad = False
+
 
     if verbose:
         total_params = sum(p.numel() for p in model.parameters())
@@ -732,3 +734,18 @@ class DualDistillationTrainer(Trainer):
         total_loss = per_sample_loss.mean()
 
         return (total_loss, student_output) if return_outputs else total_loss
+
+
+
+N_DISCORD_MESSAGES = 1_000_000          # cap so Discord doesn't drown out Jigsaw
+
+def student_text_iterator(unlabeled_set, labeled_set):
+    # Training splits only (no val leakage). Strip "Username: " and split bundled sends.
+    discord = (part
+               for convo in unlabeled_set
+               for m in convo
+               for part in m.split(": ", 1)[-1].split("\\n")   # literal backslash-n in your files
+               if part.strip())
+    yield from itertools.islice(discord, N_DISCORD_MESSAGES)
+    for text, _ in labeled_set:
+        yield text
