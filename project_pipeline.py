@@ -145,7 +145,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     print("General Setup done")
 
-    if args.do_DA and 0:
+    if args.do_DA:
         
         # MLM models automatically uses CrossEntropyLoss with ignore_index=-100 for masked tokens, so no need to specify loss function here.
         teacher_mlm = AutoModelForMaskedLM.from_pretrained(TEACHER_BASE)
@@ -210,7 +210,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         teacher_tokenizer.save_pretrained(BEST_DA_TEACHER_PATH / "TOKENIZER")
         print("Domain adapted Teacher model saved.")
 
-    if args.do_TL and 0:
+    if args.do_TL:
         print("\n\n")
         print("####################################################")
         print("### PHASE 2 : TRANSFER LEARNING OF TEACHER MODEL ###")
@@ -336,22 +336,22 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         #   _S (Small) ~0.1% of teacher model parameters
 
         #MLP students
-        #MLP_DeepNarrow_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[512, 512, 512, 512, 512, 512, 512, 512], name="MLP_DeepNarrow_L")
-        #MLP_DeepNarrow_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[256, 256, 256, 256, 256, 256], name="MLP_DeepNarrow_M")
+        MLP_DeepNarrow_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[512, 512, 512, 512, 512, 512, 512, 512], name="MLP_DeepNarrow_L")
+        MLP_DeepNarrow_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[256, 256, 256, 256, 256, 256], name="MLP_DeepNarrow_M")
         MLP_DeepNarrow_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[128, 128, 128, 128], name="MLP_DeepNarrow_S")
-        #MLP_ShortWide_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[4096, 4096], name="MLP_ShortWide_L")
-        #MLP_ShortWide_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[1024, 1024], name="MLP_ShortWide_M")
+        MLP_ShortWide_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[4096, 4096], name="MLP_ShortWide_L")
+        MLP_ShortWide_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[1024, 1024], name="MLP_ShortWide_M")
         MLP_ShortWide_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[512], name="MLP_ShortWide_S")
-        #MLP_Bottleneck_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[2048, 512, 2048], name="MLP_Bottleneck_L")
-        #MLP_Bottleneck_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[512, 64, 512], name="MLP_Bottleneck_M")
+        MLP_Bottleneck_L = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[2048, 512, 2048], name="MLP_Bottleneck_L")
+        MLP_Bottleneck_M = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[512, 64, 512], name="MLP_Bottleneck_M")
         MLP_Bottleneck_S = modelSetups.customMLP_wEmbedding(vocab_size=token_size, embed_dim=embed_dim, num_labels=6, layers_array=[256, 32, 256], name="MLP_Bottleneck_S")
 
         #Transformer students
-        #Trans_DeepNarrow_L = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=12, d_model=256, dff=512, num_heads=4, num_labels=6, name="Trans_DeepNarrow_L")      #Odd number of num_heads gives error??
-        #Trans_DeepNarrow_M = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=6, d_model=128, dff=256, num_heads=2, num_labels=6, name="Trans_DeepNarrow_M")
+        Trans_DeepNarrow_L = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=12, d_model=256, dff=512, num_heads=4, num_labels=6, name="Trans_DeepNarrow_L")      #Odd number of num_heads gives error??
+        Trans_DeepNarrow_M = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=6, d_model=128, dff=256, num_heads=2, num_labels=6, name="Trans_DeepNarrow_M")
         Trans_DeepNarrow_S = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=4, d_model=32, dff=64, num_heads=2, num_labels=6, name="Trans_DeepNarrow_S")          #Odd number of num_heads gives error??
-        #Trans_ShortWide_L = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=2, d_model=1024, dff=2048, num_heads=8, num_labels=6, name="Trans_ShortWide_L")
-        #Trans_ShortWide_M = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=1, d_model=256, dff=512, num_heads=4, num_labels=6, name="Trans_ShortWide_M")
+        Trans_ShortWide_L = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=2, d_model=1024, dff=2048, num_heads=8, num_labels=6, name="Trans_ShortWide_L")
+        Trans_ShortWide_M = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=1, d_model=256, dff=512, num_heads=4, num_labels=6, name="Trans_ShortWide_M")
         Trans_ShortWide_S = modelSetups.customTransformer(vocab_size=token_size, embed_dim=embed_dim, num_layers=1, d_model=64, dff=128, num_heads=2, num_labels=6, name="Trans_ShortWide_S")
         
         d_models_L = [256, 64, 1024]
@@ -363,11 +363,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         num_heads_L = [4, 4, 4]
         num_heads_M = [2, 2, 2]
         num_heads_S = [2, 2, 2]
-        #Trans_Bottleneck_L = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim, d_model=d_models_L, dff=dffs_M, num_heads=num_heads_L, num_labels=6, name="Trans_Bottleneck_L")
-        #Trans_Bottleneck_M = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim, d_model=d_models_M, dff=dffs_M, num_heads=num_heads_M, num_labels=6, name="Trans_Bottleneck_M")
+        Trans_Bottleneck_L = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim, d_model=d_models_L, dff=dffs_L, num_heads=num_heads_L, num_labels=6, name="Trans_Bottleneck_L")
+        Trans_Bottleneck_M = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim, d_model=d_models_M, dff=dffs_M, num_heads=num_heads_M, num_labels=6, name="Trans_Bottleneck_M")
         Trans_Bottleneck_S = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim, d_model=d_models_S, dff=dffs_S, num_heads=num_heads_S, num_labels=6, name="Trans_Bottleneck_S")
 
-        student_models = [MLP_DeepNarrow_S, MLP_ShortWide_S, MLP_Bottleneck_S, Trans_DeepNarrow_S, Trans_ShortWide_S, Trans_Bottleneck_S]
+        student_models = [MLP_DeepNarrow_L,     MLP_DeepNarrow_M,       MLP_DeepNarrow_S, 
+                          MLP_ShortWide_L,      MLP_ShortWide_M,        MLP_ShortWide_S, 
+                          MLP_Bottleneck_L,     MLP_Bottleneck_M,       MLP_Bottleneck_S, 
+                          Trans_DeepNarrow_L,   Trans_DeepNarrow_M,     Trans_DeepNarrow_S, 
+                          Trans_ShortWide_L,    Trans_ShortWide_M,      Trans_ShortWide_S, 
+                          Trans_Bottleneck_L,   Trans_Bottleneck_M,     Trans_Bottleneck_S]
+        
         print(f"{len(student_models)} student models initialized for distillation")
             
         for idx, student_model in enumerate(student_models):
@@ -542,48 +548,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 json.dump(evaluation_report, evaluation_file, indent=2)
             print(f"Student evaluation saved to {evaluation_path / 'evaluation_results.json'}")
 
-
-#### TODO: 
-
-# Save results from training, validation and testing for all models in a structured way (e.g., CSV, JSON, or a database) for later analysis and comparison.
-# 
-# DO MORE STUDENT MODELS, DIFFERENT ARCHITECTURES, HYPERPARAMETERS, ETC.
-# DO PHASE 4: TESTING MODELS
-# - TEST THE FINAL TEACHER ON JIGSAW TEST SET
-# - TEST EVERY STUDENT ON THE JIGSAW TEST SET
-# - RECORD METRICS FOR EACH STUDENT MODEL
-# - - model name, parameter count, checkpoint size, test metrics, inference latency, peak memory usage, tokenizer, sequence length, thresholds
-#
-# Training controls 
-# - learning rate scheduler
-# - gradient clipping 
-# - mixed precision training
-# - checkpointing
-# - reproducible random seed
-#
-# TUNE THRESHOLDS ON VALIDATION SET FOR EACH LABEL INSTEAD OF USING 0.5
-# 
-# BETTER METRICS THAN JUST ACCURACY:
-# PR LABEL
-# Precision
-# Recall
-# F1
-# Macro F1
-# Micro F1
-# PR-AUC 
-# - probably % correct labeled when NOT 0 (pr label and total)
-#  
-#Plots could include:
-#Training and validation loss
-#Training and validation F1
-#Per-label F1
-#Precision-recall curves
-#Accuracy/F1 versus parameter count
-#Accuracy/F1 versus latency
-#Memory usage comparison
-#Model size comparison
-
-#Refactor for the sweep. Wrap the phases in functions taking a config dict and writing a results JSON per run, and add a global seed. That matters more than any single fix above once you have many students.
 
 if __name__ == "__main__":
     main()
