@@ -4,6 +4,35 @@ import torch.nn.functional as nnF
 from collections.abc import Sequence
 from transformers.modeling_outputs import SequenceClassifierOutput
 
+
+def create_student_model(name: str, vocab_size: int) -> nn.Module:
+    """Create a configured student architecture by its saved model name."""
+    configurations = {
+        "MLP_DeepNarrow_L": (customMLP_wEmbedding, {"embed_dim": 258, "layers_array": [512] * 8}),
+        "MLP_DeepNarrow_M": (customMLP_wEmbedding, {"embed_dim": 64, "layers_array": [256] * 6}),
+        "MLP_DeepNarrow_S": (customMLP_wEmbedding, {"embed_dim": 16, "layers_array": [128] * 4}),
+        "MLP_ShortWide_L": (customMLP_wEmbedding, {"embed_dim": 258, "layers_array": [4096, 4096]}),
+        "MLP_ShortWide_M": (customMLP_wEmbedding, {"embed_dim": 64, "layers_array": [1024, 1024]}),
+        "MLP_ShortWide_S": (customMLP_wEmbedding, {"embed_dim": 16, "layers_array": [512]}),
+        "MLP_Bottleneck_L": (customMLP_wEmbedding, {"embed_dim": 258, "layers_array": [2048, 512, 2048]}),
+        "MLP_Bottleneck_M": (customMLP_wEmbedding, {"embed_dim": 64, "layers_array": [512, 64, 512]}),
+        "MLP_Bottleneck_S": (customMLP_wEmbedding, {"embed_dim": 16, "layers_array": [256, 32, 256]}),
+        "Trans_DeepNarrow_L": (customTransformer, {"embed_dim": 258, "num_layers": 12, "d_model": 256, "dff": 512, "num_heads": 4}),
+        "Trans_DeepNarrow_M": (customTransformer, {"embed_dim": 64, "num_layers": 6, "d_model": 128, "dff": 256, "num_heads": 2}),
+        "Trans_DeepNarrow_S": (customTransformer, {"embed_dim": 16, "num_layers": 4, "d_model": 32, "dff": 64, "num_heads": 2}),
+        "Trans_ShortWide_L": (customTransformer, {"embed_dim": 258, "num_layers": 2, "d_model": 1024, "dff": 2048, "num_heads": 8}),
+        "Trans_ShortWide_M": (customTransformer, {"embed_dim": 64, "num_layers": 1, "d_model": 256, "dff": 512, "num_heads": 4}),
+        "Trans_ShortWide_S": (customTransformer, {"embed_dim": 16, "num_layers": 1, "d_model": 64, "dff": 128, "num_heads": 2}),
+        "Trans_Bottleneck_L": (customTransformerBN, {"embed_dim": 258, "d_model": [256, 64, 1024], "dff": [512, 128, 512], "num_heads": [4, 4, 4]}),
+        "Trans_Bottleneck_M": (customTransformerBN, {"embed_dim": 64, "d_model": [128, 32, 128], "dff": [256, 64, 256], "num_heads": [2, 2, 2]}),
+        "Trans_Bottleneck_S": (customTransformerBN, {"embed_dim": 16, "d_model": [32, 8, 32], "dff": [64, 16, 64], "num_heads": [2, 2, 2]}),
+    }
+    try:
+        model_class, parameters = configurations[name]
+    except KeyError as error:
+        raise ValueError(f"Unknown student model name: {name}") from error
+    return model_class(vocab_size=vocab_size, num_labels=6, name=name, **parameters)
+
 class customMLP_wEmbedding(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int, num_labels: int = 6, layers_array: Sequence[int] = (), name: str = "customMLP"):
         super().__init__()
@@ -23,15 +52,22 @@ class customMLP_wEmbedding(nn.Module):
         self.hidden_layers = nn.Sequential(*hidden_layers)
         self.classifier = nn.Linear(previous_size, num_labels)  #End with a linear layer to the number of labels
 
-    def forward(self, input_ids, labels=None, **kwargs):
+    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         x = self.embeddings(input_ids)
-        x = x.mean(dim=1)                       #Connection from embedding to the MLP
+
+        if attention_mask is None: 
+            attention_mask = torch.ones_like(input_ids)
+
+        m = attention_mask.unsqueeze(-1).to(x.dtype)    #Connection from embedding to the MLP
+        x = (x * m).sum(1) / m.sum(1).clamp(min=1)      #No padding when batch=1 as in production
+                   
         x = self.hidden_layers(x)
         logits = self.classifier(x)
         loss = None
         if labels is not None:
             loss = nnF.binary_cross_entropy_with_logits(logits, labels.float())
         return SequenceClassifierOutput(logits=logits, loss=loss)
+
 
 class customTransformer(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int, num_layers: int = 6, d_model: int = 512, dff: int = 2048,
