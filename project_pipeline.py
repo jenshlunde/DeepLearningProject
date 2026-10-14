@@ -159,8 +159,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     else:          
         if args.on_cluster:
             JEF_1056_DATASET_PATH = Path("/home/dl08e26/DATA/discord-v3-antispam_balanced_samples.jsonl")
-            JIGSAW_DATASET_PATH = Path("/home/dl08e26/DATA/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")
-            JIGSAW_DATASET_TEST_PATH = Path("/home/dl08e26/DATA/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test.jsonl")
+            JIGSAW_DATASET_PATH = Path("/home/dl08e26/DATA/jigsaw_data_train.jsonl")
+            JIGSAW_DATASET_TEST_PATH = Path("/home/dl08e26/DATA/jigsaw_data_test.jsonl")
         else:
             JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_balanced_samples.jsonl")
             JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")
