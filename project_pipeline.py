@@ -58,23 +58,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = build_parser().parse_args(argv)
     local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank))
     
-    print("\n\n")
-    print("#######################")
-    print("### PHASE 0 : SETUP ###")
-    print("#######################")
-    print("\n\n")
+    if local_rank == 0:
+        print("\n\n")
+        print("#######################")
+        print("### PHASE 0 : SETUP ###")
+        print("#######################")
+        print("\n\n")
 
-    print("Imports done")
+        print("Imports done")
 
-    ##########################
-    #####     CHECKS     #####
-    ##########################
+        ##########################
+        #####     CHECKS     #####
+        ##########################
 
-    print("Starting Checks...")
+        print("Starting Checks...")
 
-    print("PyTorch version:", torch.__version__)
+        print("PyTorch version:", torch.__version__)
 
-    print("Checking for CUDA availability")
+        print("Checking for CUDA availability")
 
     if torch.cuda.is_available():
         if local_rank >= 0:
@@ -97,8 +98,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         device = torch.device('cpu')
         print("no cuda available")
 
-
-    print("Checks done")
+    if local_rank == 0:
+        print("Checks done")
 
     #########################
     #####     SETUP     #####
@@ -124,14 +125,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     STUDENT_VOCAB_SIZE = 16_000     #Correct size??
 
     if args.full_run:
-        print("### RUNNING FULL TRAINING PIPELINE ###")
+        if local_rank == 0:
+            print("### RUNNING FULL TRAINING PIPELINE ###")
         args.do_DA = True
         args.do_TL = True
         args.do_DIS = True
         args.do_MET = True
 
     if args.test_run:   
-        print("### RUNNING TEST - EPOCHS AND DATALENGTHS REDUCED ###")
+        if local_rank == 0:
+            print("### RUNNING TEST - EPOCHS AND DATALENGTHS REDUCED ###")
         #SHORT DATASETS FOR TESTS
         if args.on_cluster:
             JEF_1056_DATASET_PATH = Path("/home/dl08e26/DATA/discord-v3-antispam_short_100.jsonl")
@@ -156,9 +159,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             JEF_1056_DATASET_PATH = Path("/home/dl08e26/DATA/discord-v3-antispam_balanced_samples.jsonl")
             JIGSAW_DATASET_PATH = Path("/home/dl08e26/DATA/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")
             JIGSAW_DATASET_TEST_PATH = Path("/home/dl08e26/DATA/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test.jsonl")
-            args.batch_size_da = 12     ##Better GPUs can handle more
-            args.batch_size_tl = 24
-            args.batch_size_dis = 128
         else:
             JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_balanced_samples.jsonl")
             JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")
@@ -173,22 +173,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     student_tokenizer = None
     jigsaw_data_set = None
 
-    print("General Setup done")
+    if local_rank == 0:
+        print("General Setup done")
 
 
     if args.do_DA:
-
-        print("\n\n")
-        print("####################################################")
-        print("### PHASE 1 : DOMAIN ADAPTATION OF TEACHER MODEL ###")
-        print("####################################################")
-        print("\n\n")
+        if local_rank == 0:
+            print("\n\n")
+            print("####################################################")
+            print("### PHASE 1 : DOMAIN ADAPTATION OF TEACHER MODEL ###")
+            print("####################################################")
+            print("\n\n")
 
         # MLM models automatically uses CrossEntropyLoss with ignore_index=-100 for masked tokens, so no need to specify loss function here.
         teacher_mlm = AutoModelForMaskedLM.from_pretrained(TEACHER_BASE)
-        print(f"Teacher model initialized: {TEACHER_BASE}")
         teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)
-        print(f"Teacher tokenizer initialized: {TEACHER_BASE}")
+        if local_rank == 0:
+            print(f"Teacher model initialized: {TEACHER_BASE}")
+            print(f"Teacher tokenizer initialized: {TEACHER_BASE}")
     
         ### unlabeled dataloader ###
         data_loader_t0 = time.perf_counter()
@@ -196,14 +198,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         jef_train_size = int(0.9 * len(jef1056_dataset))
         jef_val_size = len(jef1056_dataset) - jef_train_size
         jef_train, jef_val = random_split(jef1056_dataset, [jef_train_size, jef_val_size],generator=torch.Generator().manual_seed(args.seed))
-        
-        print("jef train data set initialized, length:", len(jef_train))
-        print("jef validation data set initialized, length:", len(jef_val))
+
+        if local_rank == 0:
+            print("jef train data set initialized, length:", len(jef_train))
+            print("jef validation data set initialized, length:", len(jef_val))
 
         mlm_collator = jsonDataset.MlmCollator(teacher_tokenizer, max_length=args.max_length_da)
 
         data_loader_t1 = time.perf_counter()
-        print(f"Data loading time: {data_loader_t1 - data_loader_t0:.2f} seconds")
+        if local_rank == 0:
+            print(f"Data loading time: {data_loader_t1 - data_loader_t0:.2f} seconds")
 
         # Freeze some of the model to lighten work - half of the encoder layers - dont freeze any embedding as that is what learns words
         num_layers_DA = len(teacher_mlm.model.layers) // 2 
@@ -230,16 +234,19 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                             data_collator = mlm_collator, callbacks = callback_args_DA, args = training_args_da
                             )
 
-        print("DA Setup done - Starting domain adaptation training for teacher model... \n")
+        if local_rank == 0:
+            print("DA Setup done - Starting domain adaptation training for teacher model... \n")
+        
         trainer_timer_start = time.perf_counter()
         DA_Trainer.train()
         trainer_timer_end = time.perf_counter()
-        print(f"Trainer time: {trainer_timer_end - trainer_timer_start:.2f} seconds")
-        print("Domain adaption done.")
-
-        DA_Trainer.save_model(DA_MODEL_PATH)
-        teacher_tokenizer.save_pretrained(BEST_DA_TEACHER_PATH / "TOKENIZER")
-        print("Domain adapted Teacher model saved.")
+        
+        if local_rank == 0:
+            print(f"Trainer time: {trainer_timer_end - trainer_timer_start:.2f} seconds")
+            print("Domain adaption done.")
+            DA_Trainer.save_model(DA_MODEL_PATH)
+            teacher_tokenizer.save_pretrained(BEST_DA_TEACHER_PATH / "TOKENIZER")
+            print("Domain adapted Teacher model saved.")
 
     if args.do_TL:
         print("\n\n")
@@ -254,8 +261,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         jigsaw_val_size = len(jigsaw_data_set) - jigsaw_train_size
         jigsaw_train, jigsaw_val = random_split(jigsaw_data_set, [jigsaw_train_size, jigsaw_val_size], generator=torch.Generator().manual_seed(args.seed))
         
-        print("jigsaw_train data set initialized, length:", len(jigsaw_train))
-        print("jigsaw_val data set initialized, length:", len(jigsaw_val))
+        if local_rank == 0:
+            print("jigsaw_train data set initialized, length:", len(jigsaw_train))
+            print("jigsaw_val data set initialized, length:", len(jigsaw_val))
 
         if teacher_tokenizer is None:   #If not initilized in DA phase, initialize here
             if TOKENIZER_TEACHER_PATH.exists():
@@ -291,13 +299,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                              data_collator = jigsaw_collator, callbacks = callback_args_TL, args = training_args_TL
                             )
 
-        print("TL Setup done - Starting Transfer Learning training for teacher model... \n")
-        TL_Trainer.train()
-        print("Transfer Learning done.")
+        if local_rank == 0:
+            print("TL Setup done - Starting Transfer Learning training for teacher model... \n")
         
-        TL_Trainer.save_model(TL_MODEL_PATH)
-        teacher_tokenizer.save_pretrained(BEST_TL_TEACHER_PATH / "TOKENIZER")
-        print("Transfer Learning Teacher model saved.")
+        TL_Trainer.train()
+        
+        if local_rank == 0:
+            print("Transfer Learning done.")
+            TL_Trainer.save_model(TL_MODEL_PATH)
+            teacher_tokenizer.save_pretrained(BEST_TL_TEACHER_PATH / "TOKENIZER")
+            print("Transfer Learning Teacher model saved.")
 
 
     if args.do_DIS:
@@ -372,11 +383,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 
         ### Student model(s) ###
-        embed_dim_L = 258   # Set the embedding dimension for student models
+        embed_dim_L = 256   # Set the embedding dimension for student models
         embed_dim_M = 64    # should be derived from something specific
         embed_dim_S = 16    # but for now this works
 
-        token_size = student_tokenizer.vocab_size
+        token_size = len(student_tokenizer)
 
         #   _L (Large) ~10% of teacher model parameters
         #   _M (Medium) ~1% of teacher model parameters
