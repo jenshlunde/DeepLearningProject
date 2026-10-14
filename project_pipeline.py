@@ -11,6 +11,8 @@ from transformers import (AutoTokenizer, AutoModelForMaskedLM, AutoModelForSeque
                           EarlyStoppingCallback, Trainer, TrainingArguments)
 from torch.utils.data import random_split
 from safetensors.torch import load_file
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 import itertools
 import csv                                         
