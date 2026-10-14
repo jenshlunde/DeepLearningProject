@@ -15,6 +15,7 @@ from safetensors.torch import load_file
 import itertools
 import csv                                         
 import json
+import os
 import time                                                         
 
 import jsonDataset                                                  #Homegrown dataset class for reading json files
@@ -48,10 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--do-MET", action="store_true", default=False)    
     parser.add_argument("--test-run", action="store_true", default=False)
     parser.add_argument("--full-run", action="store_true", default=False)
+    parser.add_argument("--on-cluster", action="store_true", default=False)
+    parser.add_argument("--local-rank", "--local_rank", type=int, default=-1,
+                        help=argparse.SUPPRESS)
     return parser
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = build_parser().parse_args(argv)
+    local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank))
     
     print("\n\n")
     print("#######################")
@@ -71,25 +76,27 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     print("Checking for CUDA availability")
 
-    if torch.cuda.is_available(): 
+    if torch.cuda.is_available():
+        if local_rank >= 0:
+            torch.cuda.set_device(local_rank)
+        cuda_index = torch.cuda.current_device()
         print("GPU available:", torch.cuda.is_available())
-        print("GPU:", torch.cuda.get_device_name(0))
-        device = torch.device('cuda:0')
-        cuda = torch.device('cuda:0')
+        print("GPU:", torch.cuda.get_device_name(cuda_index))
+        device = torch.device("cuda", cuda_index)
+        cuda = device
         print(torch.version.cuda)
-        print(torch.cuda.current_device())
-        print(torch.cuda.device(0))
+        print("Current CUDA device:", cuda_index)
         print(torch.cuda.device_count())
-        t = torch.cuda.get_device_properties(0).total_memory
+        t = torch.cuda.get_device_properties(cuda_index).total_memory
         print(f"Total memory: {t/1e9} GB")
-        r = torch.cuda.memory_reserved(0)
-        a = torch.cuda.memory_allocated(0)
+        r = torch.cuda.memory_reserved(cuda_index)
+        a = torch.cuda.memory_allocated(cuda_index)
         f = r-a  # free inside reserved
         print(f"Reserved memory: {r/1e9} GB")
     else:
         device = torch.device('cpu')
         print("no cuda available")
-        
+
 
     print("Checks done")
 
@@ -98,7 +105,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     #########################
 
     #PATHS
-    output_path = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/Models")
+    if args.on_cluster:
+        output_path = Path("/home/dl08e26/OUTPUT")
+    else:
+        output_path = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/Models")
     output_path.mkdir(parents=True, exist_ok=True)
     BEST_DA_TEACHER_PATH = output_path / "teacher_DA"
     BEST_TL_TEACHER_PATH = output_path / "teacher_TL"
@@ -112,19 +122,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     STUDENT_NAMES_PATH = output_path / "student_names.json"
 
     STUDENT_VOCAB_SIZE = 16_000     #Correct size??
-    
+
     if args.full_run:
         print("### RUNNING FULL TRAINING PIPELINE ###")
         args.do_DA = True
         args.do_TL = True
         args.do_DIS = True
         args.do_MET = True
+
     if args.test_run:   
         print("### RUNNING TEST - EPOCHS AND DATALENGTHS REDUCED ###")
         #SHORT DATASETS FOR TESTS
-        JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_short_100.jsonl")                                                    
-        JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train_short.jsonl")
-        JIGSAW_DATASET_TEST_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test_short.jsonl")
+        if args.on_cluster:
+            JEF_1056_DATASET_PATH = Path("/home/dl08e26/DATA/discord-v3-antispam_short_100.jsonl")
+            JIGSAW_DATASET_PATH = Path("/home/dl08e26/DATA/jigsaw_data_train_short.jsonl")
+            JIGSAW_DATASET_TEST_PATH = Path("/home/dl08e26/DATA/jigsaw_data_test_short.jsonl")
+        else:
+            JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_short_100.jsonl")
+            JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train_short.jsonl")
+            JIGSAW_DATASET_TEST_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test_short.jsonl")
         #OVERWRITE EPOCH LENGTHS AND DATASET LENGTHS FOR TESTING
         args.epochs_da = 3
         args.epochs_tl = 3
@@ -135,10 +151,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         args.do_TL = True
         args.do_DIS = True
         args.do_MET = True
-    else:           
-        JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_balanced_samples.jsonl")                                            
-        JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")        
-        JIGSAW_DATASET_TEST_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test.jsonl")
+    else:          
+        if args.on_cluster:
+            JEF_1056_DATASET_PATH = Path("/home/dl08e26/DATA/discord-v3-antispam_balanced_samples.jsonl")
+            JIGSAW_DATASET_PATH = Path("/home/dl08e26/DATA/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")
+            JIGSAW_DATASET_TEST_PATH = Path("/home/dl08e26/DATA/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test.jsonl")
+            args.batch_size_da = 12     ##Better GPUs can handle more
+            args.batch_size_tl = 24
+            args.batch_size_dis = 128
+        else:
+            JEF_1056_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/discord-v3-antispam_balanced_samples.jsonl")
+            JIGSAW_DATASET_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_train.jsonl")
+            JIGSAW_DATASET_TEST_PATH = Path("C:/Users/jensh/Desktop/Kaggle_disord_data_v3/jigsaw-toxic-comment-classification-challenge/versions/1/jigsaw_data_test.jsonl")
 
     ## Teacher model(s)
     TEACHER_BASE = "answerdotai/ModernBERT-base"
