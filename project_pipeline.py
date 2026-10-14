@@ -229,6 +229,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             metric_for_best_model="eval_loss",
             greater_is_better=False,
             save_total_limit=2,
+            ddp_find_unused_parameters=False,
         )
         callback_args_DA = [EarlyStoppingCallback(early_stopping_patience=args.patience_da)]
         
@@ -294,6 +295,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             metric_for_best_model="eval_loss",
             greater_is_better=False,
             save_total_limit=2,
+            ddp_find_unused_parameters=False,
         )
         callback_args_TL = [EarlyStoppingCallback(early_stopping_patience=args.patience_tl)]
         
