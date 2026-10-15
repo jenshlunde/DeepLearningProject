@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-workers-tl", type=int, default=4)
     parser.add_argument("--num-workers-dis", type=int, default=4)
     parser.add_argument("--max-length-da", type=int, default=256)
+    parser.add_argument("--max-length-dis", type=int, default=512)
     parser.add_argument("--learning-rate-da", type=float, default=5e-5)
     parser.add_argument("--learning-rate-tl", type=float, default=1e-5)
     parser.add_argument("--learning-rate-dis", type=float, default=5e-4)
@@ -343,9 +344,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             jigsaw_train, jigsaw_val = random_split(jigsaw_data_set, [jigsaw_train_size, jigsaw_val_size], generator=torch.Generator().manual_seed(args.seed))
 
 
-        jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer)
-        jigsaw_train_cache = modelFunctions.cache_logits(teacher_model, jigsaw_train, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "train_logits_cache", batch_size=args.batch_size_dis, device=device, seed=args.seed)
-        jigsaw_val_cache = modelFunctions.cache_logits(teacher_model, jigsaw_val, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "val_logits_cache", batch_size=args.batch_size_dis, device=device, seed=args.seed)
+        jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer, max_length=args.max_length_dis)
+        CACHE_BATCH = 32;
+        jigsaw_train_cache = modelFunctions.cache_logits(teacher_model, jigsaw_train, jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "train_logits_cache", batch_size=CACHE_BATCH, device=device, seed=args.seed)
+        jigsaw_val_cache   = modelFunctions.cache_logits(teacher_model, jigsaw_val,   jigsaw_collator, cache_path=CACHE_LOGITS_PATH / "val_logits_cache",   batch_size=CACHE_BATCH, device=device, seed=args.seed)
         print("Logits caching done for jigsaw dataset.")
 
         jef1056_dataset = jsonDataset.jef1056dataset(JEF_1056_DATASET_PATH)
@@ -354,15 +356,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         jef_train, jef_val = random_split(jef1056_dataset, [jef_train_size, jef_val_size], generator=torch.Generator().manual_seed(args.seed))
         jef_collator = jsonDataset.TextCollator(teacher_tokenizer, max_length=args.max_length_da)
 
-        jef_train_cache = modelFunctions.cache_logits(teacher_model, jef_train, jef_collator,
-                                                      cache_path=CACHE_LOGITS_PATH / "jef_train_logits_cache",
-                                                      batch_size=args.batch_size_dis, device=device, seed=args.seed,
-                                                      )
-        jef_val_cache = modelFunctions.cache_logits(teacher_model, jef_val, jef_collator,
-                                                    cache_path=CACHE_LOGITS_PATH / "jef_val_logits_cache",
-                                                    batch_size=args.batch_size_dis, device=device, seed=args.seed,
-                                                    )                
+        jef_train_cache = modelFunctions.cache_logits(teacher_model, jef_train, jef_collator, cache_path=CACHE_LOGITS_PATH / "jef_train_logits_cache", batch_size=CACHE_BATCH, device=device, seed=args.seed)
+        jef_val_cache   = modelFunctions.cache_logits(teacher_model, jef_val,   jef_collator, cache_path=CACHE_LOGITS_PATH / "jef_val_logits_cache",   batch_size=CACHE_BATCH, device=device, seed=args.seed)                
         print("Logits caching done for jef1056 dataset.")
+        
+        teacher_model.cpu()         #Empty GPU memory for student models
+        torch.cuda.empty_cache()
 
         ### Create dual dataset for distillation - outside the loop to avoid reloading the caches for each student model and give each student the same data 
         dual_train = jsonDataset.DualDataset(jef_train_cache, jigsaw_train_cache)

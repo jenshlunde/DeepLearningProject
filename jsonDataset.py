@@ -130,12 +130,13 @@ class MlmCollator:
         return self.data_collator(chunks)
 
 class SupervisedCollator:
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, max_length=None):
         self.tokenizer = tokenizer
+        self.max_length = max_length
 
     def __call__(self, batch):
         texts, labels = zip(*batch)
-        tokenized = self.tokenizer(list(texts), padding=True, truncation=True, return_tensors="pt")
+        tokenized = self.tokenizer(list(texts), padding=True, truncation=True, max_length=self.max_length, return_tensors="pt")
         tokenized["labels"] = torch.stack(labels)
         return tokenized
 
