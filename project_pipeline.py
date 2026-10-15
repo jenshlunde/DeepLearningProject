@@ -437,12 +437,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             Trans_Bottleneck_M = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim_M, d_model=d_models_M, dff=dffs_M, num_heads=num_heads_M, num_labels=6, name="Trans_Bottleneck_M")
             Trans_Bottleneck_S = modelSetups.customTransformerBN(vocab_size=token_size, embed_dim=embed_dim_S, d_model=d_models_S, dff=dffs_S, num_heads=num_heads_S, num_labels=6, name="Trans_Bottleneck_S")
 
-            student_models = [MLP_DeepNarrow_L,     MLP_DeepNarrow_M,       MLP_DeepNarrow_S, 
-                            MLP_ShortWide_L,      MLP_ShortWide_M,        MLP_ShortWide_S, 
-                            MLP_Bottleneck_L,     MLP_Bottleneck_M,       MLP_Bottleneck_S, 
-                            Trans_DeepNarrow_L,   Trans_DeepNarrow_M,     Trans_DeepNarrow_S, 
-                            Trans_ShortWide_L,    Trans_ShortWide_M,      Trans_ShortWide_S, 
-                            Trans_Bottleneck_L,   Trans_Bottleneck_M,     Trans_Bottleneck_S]
+            student_models = [Trans_DeepNarrow_L, Trans_ShortWide_L, Trans_Bottleneck_L,
+                              Trans_DeepNarrow_M, Trans_ShortWide_M, Trans_Bottleneck_M,
+                              Trans_DeepNarrow_S, Trans_ShortWide_S, Trans_Bottleneck_S,
+                              MLP_DeepNarrow_L,   MLP_ShortWide_L,      MLP_Bottleneck_L,
+                              MLP_DeepNarrow_M,   MLP_ShortWide_M,      MLP_Bottleneck_M,
+                              MLP_DeepNarrow_S,   MLP_ShortWide_S,      MLP_Bottleneck_S]
 
         
         student_models_names = [model.name for model in student_models]
