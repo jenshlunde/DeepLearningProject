@@ -4,28 +4,31 @@ import torch.nn.functional as nnF
 from collections.abc import Sequence
 from transformers.modeling_outputs import SequenceClassifierOutput
 
+EMBED_DIM_L = 256
+EMBED_DIM_M = 64
+EMBED_DIM_S = 16
 
 def create_student_model(name: str, vocab_size: int) -> nn.Module:
     """Create a configured student architecture by its saved model name."""
     configurations = {
-        "MLP_DeepNarrow_L": (customMLP_wEmbedding, {"embed_dim": 258, "layers_array": [512] * 8}),
-        "MLP_DeepNarrow_M": (customMLP_wEmbedding, {"embed_dim": 64, "layers_array": [256] * 6}),
-        "MLP_DeepNarrow_S": (customMLP_wEmbedding, {"embed_dim": 16, "layers_array": [128] * 4}),
-        "MLP_ShortWide_L": (customMLP_wEmbedding, {"embed_dim": 258, "layers_array": [4096, 4096]}),
-        "MLP_ShortWide_M": (customMLP_wEmbedding, {"embed_dim": 64, "layers_array": [1024, 1024]}),
-        "MLP_ShortWide_S": (customMLP_wEmbedding, {"embed_dim": 16, "layers_array": [512]}),
-        "MLP_Bottleneck_L": (customMLP_wEmbedding, {"embed_dim": 258, "layers_array": [2048, 512, 2048]}),
-        "MLP_Bottleneck_M": (customMLP_wEmbedding, {"embed_dim": 64, "layers_array": [512, 64, 512]}),
-        "MLP_Bottleneck_S": (customMLP_wEmbedding, {"embed_dim": 16, "layers_array": [256, 32, 256]}),
-        "Trans_DeepNarrow_L": (customTransformer, {"embed_dim": 258, "num_layers": 12, "d_model": 256, "dff": 512, "num_heads": 4}),
-        "Trans_DeepNarrow_M": (customTransformer, {"embed_dim": 64, "num_layers": 6, "d_model": 128, "dff": 256, "num_heads": 2}),
-        "Trans_DeepNarrow_S": (customTransformer, {"embed_dim": 16, "num_layers": 4, "d_model": 32, "dff": 64, "num_heads": 2}),
-        "Trans_ShortWide_L": (customTransformer, {"embed_dim": 258, "num_layers": 2, "d_model": 1024, "dff": 2048, "num_heads": 8}),
-        "Trans_ShortWide_M": (customTransformer, {"embed_dim": 64, "num_layers": 1, "d_model": 256, "dff": 512, "num_heads": 4}),
-        "Trans_ShortWide_S": (customTransformer, {"embed_dim": 16, "num_layers": 1, "d_model": 64, "dff": 128, "num_heads": 2}),
-        "Trans_Bottleneck_L": (customTransformerBN, {"embed_dim": 258, "d_model": [256, 64, 1024], "dff": [512, 128, 512], "num_heads": [4, 4, 4]}),
-        "Trans_Bottleneck_M": (customTransformerBN, {"embed_dim": 64, "d_model": [128, 32, 128], "dff": [256, 64, 256], "num_heads": [2, 2, 2]}),
-        "Trans_Bottleneck_S": (customTransformerBN, {"embed_dim": 16, "d_model": [32, 8, 32], "dff": [64, 16, 64], "num_heads": [2, 2, 2]}),
+        "MLP_DeepNarrow_L": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_L, "layers_array": [512] * 8}),
+        "MLP_DeepNarrow_M": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_M, "layers_array": [256] * 6}),
+        "MLP_DeepNarrow_S": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_S, "layers_array": [128] * 4}),
+        "MLP_ShortWide_L": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_L, "layers_array": [4096, 4096]}),
+        "MLP_ShortWide_M": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_M, "layers_array": [1024, 1024]}),
+        "MLP_ShortWide_S": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_S, "layers_array": [512]}),
+        "MLP_Bottleneck_L": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_L, "layers_array": [2048, 512, 2048]}),
+        "MLP_Bottleneck_M": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_M, "layers_array": [512, 64, 512]}),
+        "MLP_Bottleneck_S": (customMLP_wEmbedding, {"embed_dim": EMBED_DIM_S, "layers_array": [256, 32, 256]}),
+        "Trans_DeepNarrow_L": (customTransformer, {"embed_dim": EMBED_DIM_L, "num_layers": 12, "d_model": 256, "dff": 512, "num_heads": 4}),
+        "Trans_DeepNarrow_M": (customTransformer, {"embed_dim": EMBED_DIM_M, "num_layers": 6, "d_model": 128, "dff": 256, "num_heads": 2}),
+        "Trans_DeepNarrow_S": (customTransformer, {"embed_dim": EMBED_DIM_S, "num_layers": 4, "d_model": 32, "dff": 64, "num_heads": 2}),
+        "Trans_ShortWide_L": (customTransformer, {"embed_dim": EMBED_DIM_L, "num_layers": 2, "d_model": 1024, "dff": 2048, "num_heads": 8}),
+        "Trans_ShortWide_M": (customTransformer, {"embed_dim": EMBED_DIM_M, "num_layers": 1, "d_model": 256, "dff": 512, "num_heads": 4}),
+        "Trans_ShortWide_S": (customTransformer, {"embed_dim": EMBED_DIM_S, "num_layers": 1, "d_model": 64, "dff": 128, "num_heads": 2}),
+        "Trans_Bottleneck_L": (customTransformerBN, {"embed_dim": EMBED_DIM_L, "d_model": [256, 64, 1024], "dff": [512, 128, 512], "num_heads": [4, 4, 4]}),
+        "Trans_Bottleneck_M": (customTransformerBN, {"embed_dim": EMBED_DIM_M, "d_model": [128, 32, 128], "dff": [256, 64, 256], "num_heads": [2, 2, 2]}),
+        "Trans_Bottleneck_S": (customTransformerBN, {"embed_dim": EMBED_DIM_S, "d_model": [32, 8, 32], "dff": [64, 16, 64], "num_heads": [2, 2, 2]}),
     }
     try:
         model_class, parameters = configurations[name]
