@@ -280,7 +280,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print("Re-initializing teacher model for transfer learning.")
         # Models automatically uses BinaryCrossEntropy with logits loss when num_labels > 1 and problem_type="multi_label_classification", so no need to specify loss function here.
         teacher_model = AutoModelForSequenceClassification.from_pretrained(DA_MODEL_PATH, num_labels=6,problem_type="multi_label_classification")
-        modelFunctions.freeze_layers(teacher_model, freeze_embeddings=True, keep_last=1, verbose=True)
+        num_layers_TL = len(teacher_model.model.layers) // 2 
+        modelFunctions.freeze_layers(teacher_model, freeze_embeddings=True, keep_last=num_layers_TL, verbose=True)
         
         #Training setup - TL
         training_args_TL = TrainingArguments(
