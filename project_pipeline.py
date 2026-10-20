@@ -564,6 +564,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print("Teacher end-to-end benchmark:")
         print(teacher_benchmark["benchmark"])
 
+        evaluation_path = BEST_TL_TEACHER_PATH / "evaluation"
+        evaluation_path.mkdir(parents=True, exist_ok=True)
+        evaluation_report = {
+            "teacher_index": 1,
+            "teacher_metrics": teacher_metrics,
+            "teacher_benchmark": teacher_benchmark,
+        }
+    
+        with (evaluation_path / "evaluation_results.json").open("w", encoding="utf-8") as evaluation_file:
+            json.dump(evaluation_report, evaluation_file, indent=2)
+        print(f"Teacher evaluation saved to {evaluation_path / 'evaluation_results.json'}")    
+        teacher_model.cpu()
 
 
         #EVAL STUDENT MODELS
