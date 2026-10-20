@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-workers-tl", type=int, default=4)
     parser.add_argument("--num-workers-dis", type=int, default=4)
     parser.add_argument("--max-length-da", type=int, default=256)
+    parser.add_argument("--max-length-tl", type=int, default=512)
     parser.add_argument("--max-length-dis", type=int, default=512)
     parser.add_argument("--learning-rate-da", type=float, default=5e-5)
     parser.add_argument("--learning-rate-tl", type=float, default=1e-5)
@@ -275,7 +276,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             else:
                 teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)     #Otherwise, load the base version of the teacher model tokenizer
 
-        jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer)
+        jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer, max_length=args.max_length_tl)
             
         print("Re-initializing teacher model for transfer learning.")
         # Models automatically uses BinaryCrossEntropy with logits loss when num_labels > 1 and problem_type="multi_label_classification", so no need to specify loss function here.
@@ -532,7 +533,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
         #EVAL TEACHER MODEL
         print("\n\nEvaluating teacher model...")
-        evaluation_teacher_collator = jsonDataset.SupervisedCollator(teacher_tokenizer) 
+        evaluation_teacher_collator = jsonDataset.SupervisedCollator(teacher_tokenizer, max_length=args.max_length_dis)
         evaluation_teacher_args = TrainingArguments(
             output_dir=BEST_TL_TEACHER_PATH / "evaluation",
             per_device_eval_batch_size=args.batch_size_tl,
