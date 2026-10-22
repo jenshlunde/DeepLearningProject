@@ -49,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patience-dis", type=int, default=5)
     parser.add_argument("--do-DA", action="store_true", default=False)
     parser.add_argument("--do-TL", action="store_true", default=False)
+    parser.add_argument("--do-TL-no-DA", action="store_true", default=False)
     parser.add_argument("--do-DIS", action="store_true", default=False)
     parser.add_argument("--do-MET", action="store_true", default=False)    
     parser.add_argument("--test-run", action="store_true", default=False)
@@ -156,6 +157,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         #TEST ALL PHASES
         args.do_DA = True
         args.do_TL = True
+        args.do_TL_no_DA = True
         args.do_DIS = True
         args.do_MET = True
     else:          
@@ -270,17 +272,23 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print("jigsaw_train data set initialized, length:", len(jigsaw_train))
             print("jigsaw_val data set initialized, length:", len(jigsaw_val))
 
-        if teacher_tokenizer is None:   #If not initilized in DA phase, initialize here
-            if TOKENIZER_TEACHER_PATH.exists():
-                teacher_tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_TEACHER_PATH)   #If a saved version exists, load that one
-            else:
-                teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)     #Otherwise, load the base version of the teacher model tokenizer
+        if args.do_TL_no_DA:
+            print("Transfer learning without domain adaptation selected.")
+            teacher_model = AutoModelForSequenceClassification.from_pretrained(TEACHER_BASE, num_labels=6,problem_type="multi_label_classification")
+            teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)
+        else:
+            if teacher_tokenizer is None:   #If not initilized in DA phase, initialize here
+                if TOKENIZER_TEACHER_PATH.exists():
+                    teacher_tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_TEACHER_PATH)   #If a saved version exists, load that one
+                else:
+                    teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_BASE)     #Otherwise, load the base version of the teacher model tokenizer
+        
+            print("Re-initializing teacher model for transfer learning.")
+            # Models automatically uses BinaryCrossEntropy with logits loss when num_labels > 1 and problem_type="multi_label_classification", so no need to specify loss function here.
+            teacher_model = AutoModelForSequenceClassification.from_pretrained(DA_MODEL_PATH, num_labels=6,problem_type="multi_label_classification")
 
         jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer, max_length=args.max_length_tl)
             
-        print("Re-initializing teacher model for transfer learning.")
-        # Models automatically uses BinaryCrossEntropy with logits loss when num_labels > 1 and problem_type="multi_label_classification", so no need to specify loss function here.
-        teacher_model = AutoModelForSequenceClassification.from_pretrained(DA_MODEL_PATH, num_labels=6,problem_type="multi_label_classification")
         num_layers_TL = len(teacher_model.model.layers) // 2 
         modelFunctions.freeze_layers(teacher_model, freeze_embeddings=True, keep_last=num_layers_TL, verbose=True)
         
