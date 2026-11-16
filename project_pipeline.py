@@ -9,7 +9,7 @@ from typing import Optional, Sequence
 import torch
 from transformers import (AutoTokenizer, AutoModelForMaskedLM, AutoModelForSequenceClassification,
                           EarlyStoppingCallback, Trainer, TrainingArguments)
-from torch.utils.data import random_split
+from torch.utils.data import Subset, random_split
 from safetensors.torch import load_file
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -23,6 +23,7 @@ import time
 import jsonDataset                                                  #Homegrown dataset class for reading json files
 import modelFunctions                                               #Homegrown functions for models: train, val, test, ...
 import modelSetups                                                  #Homegrown model setups: MLP, CNN, RNN, ...
+import data_splits
 
 # Options/variables to use for the training pipeline:
 def build_parser() -> argparse.ArgumentParser:
@@ -277,9 +278,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         ## labeled dataloader
         jigsaw_data_set = jsonDataset.jigsawDataset(JIGSAW_DATASET_PATH) # load the jigsaw dataset for transfer learning
         # Split the dataset into training and validation sets (90% for training, 10% for validation)
-        jigsaw_train_size = int(0.9 * len(jigsaw_data_set)) # train size
-        jigsaw_val_size = len(jigsaw_data_set) - jigsaw_train_size # validation set size
-        jigsaw_train, jigsaw_val = random_split(jigsaw_data_set, [jigsaw_train_size, jigsaw_val_size], generator=torch.Generator().manual_seed(args.seed)) # split into train and validation with correct size
+        jigsaw_train_indices, jigsaw_val_indices = data_splits.jigsaw_train_validation_indices(
+            len(jigsaw_data_set), args.seed
+        )
+        jigsaw_train = Subset(jigsaw_data_set, jigsaw_train_indices)
+        jigsaw_val = Subset(jigsaw_data_set, jigsaw_val_indices)
         
         if local_rank == 0:
             print("jigsaw_train data set initialized, length:", len(jigsaw_train))
@@ -363,9 +366,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         #if not intialized in prior phases, initialize here
         if jigsaw_data_set is None:
             jigsaw_data_set = jsonDataset.jigsawDataset(JIGSAW_DATASET_PATH) # load
-            jigsaw_train_size = int(0.9 * len(jigsaw_data_set)) # make train size
-            jigsaw_val_size = len(jigsaw_data_set) - jigsaw_train_size # make val size
-            jigsaw_train, jigsaw_val = random_split(jigsaw_data_set, [jigsaw_train_size, jigsaw_val_size], generator=torch.Generator().manual_seed(args.seed)) # split into sizes
+            jigsaw_train_indices, jigsaw_val_indices = data_splits.jigsaw_train_validation_indices(
+                len(jigsaw_data_set), args.seed
+            )
+            jigsaw_train = Subset(jigsaw_data_set, jigsaw_train_indices)
+            jigsaw_val = Subset(jigsaw_data_set, jigsaw_val_indices)
 
         # make collator for supervised learning (train and validation)
         jigsaw_collator = jsonDataset.SupervisedCollator(teacher_tokenizer, max_length=args.max_length_dis)
