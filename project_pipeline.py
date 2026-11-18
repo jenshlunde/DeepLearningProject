@@ -52,9 +52,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--do-TL-no-DA", action="store_true", default=False)
     parser.add_argument("--do-DIS", action="store_true", default=False)
     parser.add_argument("--do-MET", action="store_true", default=False)    
+    parser.add_argument(
+        "--eval-split",
+        choices=["validation", "test"],
+        default="test",
+        help="Dataset split used by the evaluation phase.",
+    )
     parser.add_argument("--test-run", action="store_true", default=False)
     parser.add_argument("--full-run", action="store_true", default=False)
     parser.add_argument("--on-cluster", action="store_true", default=False)
+    parser.add_argument(
+        "--student-output-dir",
+        type=Path,
+        default=None,
+        help="Student run folder, relative to OUTPUT or an absolute path.",
+    )
     parser.add_argument("--local-rank", "--local_rank", type=int, default=-1,
                         help=argparse.SUPPRESS)
     return parser
@@ -126,6 +138,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     TOKENIZER_TEACHER_PATH = TOKENIZER_PATH / "TEACHER"
     TOKENIZER_STUDENT_PATH = TOKENIZER_PATH / "STUDENT"
     STUDENT_NAMES_PATH = output_path / "student_names.json"
+
+    if args.student_output_dir is not None:
+        student_run_path = (
+            output_path / args.student_output_dir
+        ).resolve()
+
+        student_run_path.mkdir(parents=True, exist_ok=True)
+
+        BEST_STUDENTS_PATH = student_run_path / "best_students"
+        STUDENT_NAMES_PATH = student_run_path / "student_names.json"
 
     STUDENT_VOCAB_SIZE = 16_000     #Correct size??
 
@@ -536,8 +558,30 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 
         ### Load evaluation dataset                
-        evaluation_dataset = jsonDataset.jigsawDataset(JIGSAW_DATASET_TEST_PATH)
-        label_names = evaluation_dataset.class_names
+        if args.eval_split == "validation":
+            labeled_dataset = jsonDataset.jigsawDataset(
+                JIGSAW_DATASET_PATH
+            )
+
+            train_size = int(0.9 * len(labeled_dataset))
+            val_size = len(labeled_dataset) - train_size
+
+            _, evaluation_dataset = random_split(
+                labeled_dataset,
+                [train_size, val_size],
+                generator=torch.Generator().manual_seed(args.seed),
+            )
+
+            label_names = labeled_dataset.class_names
+
+        else:
+            evaluation_dataset = jsonDataset.jigsawDataset(
+                JIGSAW_DATASET_TEST_PATH
+            )
+
+            label_names = evaluation_dataset.class_names
+
+        print(f"Evaluating on: {args.eval_split}")
 
         #EVAL TEACHER MODEL
         print("\n\nEvaluating teacher model...")
@@ -573,7 +617,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print("Teacher end-to-end benchmark:")
         print(teacher_benchmark["benchmark"])
 
-        evaluation_path = BEST_TL_TEACHER_PATH / "evaluation"
+        evaluation_path = (
+            BEST_TL_TEACHER_PATH / "evaluation" / args.eval_split
+        )
         evaluation_path.mkdir(parents=True, exist_ok=True)
         evaluation_report = {
             "teacher_index": 1,
@@ -651,7 +697,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print(f"Student {student_index + 1} end-to-end benchmark:")
             print(student_benchmark["benchmark"])
 
-            evaluation_path = student_path / "evaluation"
+            evaluation_path = (
+                student_path / "evaluation" / args.eval_split
+            )
             evaluation_path.mkdir(parents=True, exist_ok=True)
             evaluation_report = {
                 "student_index": student_index + 1,
