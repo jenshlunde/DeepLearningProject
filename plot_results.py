@@ -193,6 +193,63 @@ def fig_costs(df, teacher, path):
     fig.savefig(path, dpi=200)
     plt.close(fig)
 
+# Load the latest log history
+def load_latest_log_history(run_dir):
+    checkpoints = []
+    for checkpoint in run_dir.glob("checkpoint-*"):
+        match = re.fullmatch(r"checkpoint-(\d+)", checkpoint.name)
+        state_path = checkpoint / "trainer_state.json"
+        if match and state_path.is_file():
+            checkpoints.append((int(match.group(1)), state_path))
+    if not checkpoints:
+        return None
+
+    latest_state = max(checkpoints, key=lambda checkpoint: checkpoint[0])[1]
+    with latest_state.open(encoding="utf-8") as source:
+        return json.load(source)["log_history"]
+
+# Actually plot the training loss and validation loss for given model
+def fig_loss_history(logs, path):
+    train = [(log["epoch"], log["loss"]) for log in logs
+             if "epoch" in log and "loss" in log and "eval_loss" not in log]
+    valid = [(log["epoch"], log["eval_loss"]) for log in logs
+             if "epoch" in log and "eval_loss" in log]
+
+    if not train and not valid:
+        print(f"No loss records found for {path.stem}; skipping loss plot.")
+        return
+    if not train or not valid:
+        print(f"Incomplete loss history for {path.stem}: "
+              f"{len(train)} training and {len(valid)} validation points.")
+
+    fig, ax = plt.subplots()
+    if train:
+        ax.plot(*zip(*train), label="Training loss")
+    if valid:
+        ax.plot(*zip(*valid), label="Validation loss")
+    ax.set(xlabel="Epoch", ylabel="Loss")
+    ax.set_title(path.stem.removesuffix("_loss"))
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+# find all the runs for each student and teacher, and plot their loss history
+def plot_saved_loss_history(root, results_path):
+    run_dirs = [root / "teacher_DA", root / "teacher_TL"]
+    students_dir = root / "best_students"
+    if students_dir.is_dir():
+        run_dirs.extend(path for path in students_dir.iterdir() if path.is_dir())
+
+    for run_dir in run_dirs:
+        if not run_dir.is_dir():
+            continue
+        logs = load_latest_log_history(run_dir)
+        if logs is None:
+            print(f"No saved trainer checkpoint history under {run_dir}; skipping loss plot.")
+            continue
+        fig_loss_history(logs, results_path / f"{run_dir.name}_loss.png")
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -206,6 +263,7 @@ def main():
         a.teacher_json = str(root / "teacher_TL/evaluation/evaluation_results.json")
     res = root / "results"
     res.mkdir(exist_ok=True)
+    plot_saved_loss_history(root, res)
 
     rows, first_used = [], None
     for f in sorted((root / "best_students").glob("*/evaluation/evaluation_results.json")):
