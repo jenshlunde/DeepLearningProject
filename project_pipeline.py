@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Student run folder, relative to OUTPUT or an absolute path.",
     )
+    parser.add_argument(
+        "--students",
+        nargs="+",
+        default=None,
+        help="Student model names to train during --do-DIS. Default: all configured students.",
+    )
     parser.add_argument("--local-rank", "--local_rank", type=int, default=-1,
                         help=argparse.SUPPRESS)
     return parser
@@ -477,6 +483,19 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                               MLP_DeepNarrow_S,   MLP_ShortWide_S,      MLP_Bottleneck_S]
 
         
+        if args.students is not None:
+            available_names = {model.name for model in student_models}
+            unknown_names = set(args.students) - available_names
+            if unknown_names:
+                raise ValueError(
+                    f"Unknown or unavailable students: {', '.join(sorted(unknown_names))}. "
+                    f"Available students: {', '.join(sorted(available_names))}"
+                )
+            selected_names = set(args.students)
+            student_models = [
+                model for model in student_models if model.name in selected_names
+            ]
+
         student_models_names = [model.name for model in student_models]
         student_models_paths = [BEST_STUDENTS_PATH / model.name for model in student_models]
 
