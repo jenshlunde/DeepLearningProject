@@ -41,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate-da", type=float, default=5e-5)
     parser.add_argument("--learning-rate-tl", type=float, default=1e-5)
     parser.add_argument("--learning-rate-dis", type=float, default=5e-4)
+    parser.add_argument("--weight-decay-dis", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=.5)
     parser.add_argument("--temperature", type=float, default=2.)
@@ -517,6 +518,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 per_device_train_batch_size=args.batch_size_dis,    #Default = 8
                 num_train_epochs=args.epochs_dis,                   #Default = 3
                 learning_rate=args.learning_rate_dis,               #Default = 5e-5
+                weight_decay=args.weight_decay_dis,
                 warmup_steps=1000,                                  # LR ramps linearly over first 1000 steps
                 dataloader_num_workers=args.num_workers_dis,        #Default = 0
                 dataloader_persistent_workers=True,                 #Default = False
